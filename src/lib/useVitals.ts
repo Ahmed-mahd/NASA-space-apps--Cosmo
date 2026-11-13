@@ -12,6 +12,8 @@ export interface VitalsState {
   deviations: Record<VitalKey, Deviation>;
   ranges: Record<VitalKey, [number, number]>;
   history: HistoryPoint[];
+  /** Steps counted since the replay started (activity is steps per minute, sampled each second). */
+  stepsLive: number;
 }
 
 const KEEP = 300; // seconds of history kept for charts
@@ -20,6 +22,7 @@ const KEEP = 300; // seconds of history kept for charts
 export function useVitals() {
   const engine = useRef<{ stream: ReplayStream; baseline: Baseline } | null>(null);
   const history = useRef<HistoryPoint[]>([]);
+  const steps = useRef(0);
   const [state, setState] = useState<VitalsState | null>(null);
   const [speed, setSpeed] = useState(1);
   const [paused, setPaused] = useState(false);
@@ -40,7 +43,8 @@ export function useVitals() {
         ranges[v.key] = baseline.range(v.key);
       }
       history.current = [...history.current.slice(-(KEEP - 1)), point];
-      setState({ reading, deviations, ranges, history: history.current });
+      steps.current += (reading.values.activity ?? 0) / 60;
+      setState({ reading, deviations, ranges, history: history.current, stepsLive: steps.current });
     };
     tick();
     const id = setInterval(tick, 1000 / speed);

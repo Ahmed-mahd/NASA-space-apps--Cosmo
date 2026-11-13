@@ -5,6 +5,11 @@ import nextTs from "eslint-config-next/typescript";
 const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
+  // react-three-fiber scenes mutate three.js objects inside useFrame by design.
+  {
+    files: ["src/components/device/HoloBody.tsx", "src/components/landing/SpaceScene.tsx"],
+    rules: { "react-hooks/immutability": "off" },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:

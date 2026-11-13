@@ -1,21 +1,30 @@
 @import "tailwindcss";
 
 :root {
-  --void: #03060d;
-  --deep: #07101f;
-  --holo: #5ee6ff;
+  /* Palette taken from the team's Figma file: suit navy, plasma cyan, signal blue, Cosmo violet */
+  --void: #030b1e;
+  --deep: #071530;
+  --hull: #0b1b3f;
+  --holo: #2ee6ff;
   --holo-dim: #1b6f86;
+  --signal: #0d59ff;
+  --violet: #a35bff;
+  --suit: #f5f7ff;
   --amber: #ffb547;
-  --ok: #4dffa6;
+  --ok: #3dffb0;
   --warn: #ffd84d;
-  --alert: #ff8a3d;
-  --crit: #ff4d6a;
+  --alert: #ff9a3d;
+  --crit: #ff3b5c;
   --ink: #d9f4ff;
 }
 
 @theme inline {
   --color-void: var(--void);
   --color-deep: var(--deep);
+  --color-hull: var(--hull);
+  --color-signal: var(--signal);
+  --color-violet: var(--violet);
+  --color-suit: var(--suit);
   --color-holo: var(--holo);
   --color-holo-dim: var(--holo-dim);
   --color-amber: var(--amber);
@@ -26,9 +35,11 @@
   --color-ink: var(--ink);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-pixel: var(--font-geist-pixel-square);
 }
 
 html, body { height: 100%; }
+html { background: var(--void); }
 body {
   background: radial-gradient(1200px 700px at 70% 20%, #0b1a33 0%, var(--void) 60%);
   color: var(--ink);
@@ -58,3 +69,94 @@ body {
 @keyframes pulse-ring { 0%{transform:scale(.9);opacity:.8} 100%{transform:scale(1.6);opacity:0} }
 .pulse-ring { animation: pulse-ring 2s ease-out infinite; }
 @media (prefers-reduced-motion: reduce) { .flicker, .pulse-ring { animation: none; } }
+
+/* ================= Landing: astronaut rig (layers from the Figma motion rig) ================= */
+.astro-svg { width: 100%; height: 100%; overflow: visible; }
+.astro-float { animation: astro-float 9s ease-in-out infinite; transform-origin: 50% 55%; }
+@keyframes astro-float { 0%,100% { transform: translateY(0) rotate(-1.5deg); } 50% { transform: translateY(-2.2%) rotate(1deg); } }
+#astro-Right-arm, #astro-Right-glove, #astro-Smartwatch, #astro-Holographic-projection-wrist-anchored {
+  transform-box: view-box; transform-origin: 940px 540px; animation: astro-arm 9s ease-in-out infinite;
+}
+@keyframes astro-arm { 0%,100% { transform: rotate(0deg); } 50% { transform: rotate(-2.4deg); } }
+#astro-Left-arm, #astro-Left-glove { transform-box: view-box; transform-origin: 470px 520px; animation: astro-larm 9s ease-in-out infinite; }
+@keyframes astro-larm { 0%,100% { transform: rotate(0deg); } 50% { transform: rotate(3deg); } }
+#astro-Left-leg, #astro-Left-boot, #astro-Left-knee-pad { transform-box: view-box; transform-origin: 560px 1080px; animation: astro-leg 9s ease-in-out infinite; }
+@keyframes astro-leg { 0%,100% { transform: rotate(0deg); } 50% { transform: rotate(2.5deg); } }
+[id^="astro-Holographic-particle"] { animation: twinkle 2.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+[id^="astro-Holographic-particle"]:nth-of-type(3n) { animation-delay: -.8s; }
+[id^="astro-Holographic-particle"]:nth-of-type(3n+1) { animation-delay: -1.7s; }
+@keyframes twinkle { 0%,100% { opacity: .2; transform: scale(.6); } 50% { opacity: 1; transform: scale(1.3); } }
+[id^="astro-Corner-light"] { animation: corner 1.8s ease-in-out infinite; }
+@keyframes corner { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+#astro-Projection-beam-watch-to-screen, #astro-Projection-rays { animation: beam 3.2s ease-in-out infinite; }
+@keyframes beam { 0%,100% { opacity: .75; } 45% { opacity: 1; } 50% { opacity: .55; } 55% { opacity: 1; } }
+#astro-Smartwatch-screen path { animation: watch 2s ease-in-out infinite; }
+@keyframes watch { 0%,100% { fill: #021a3a; } 50% { fill: #00b8d9; } }
+.cosmo-float { animation: cosmo-float 6s ease-in-out infinite; }
+@keyframes cosmo-float { 0%,100% { transform: translateY(0) rotate(1deg); } 50% { transform: translateY(-4%) rotate(-1.5deg); } }
+
+/* hologram content laid over the Figma screen rect (880,500 500x320 in a 1447x1857 rig) */
+.holo-hotspot {
+  position: absolute; left: 60.82%; top: 26.93%; width: 34.55%; height: 17.23%;
+  border-radius: 6%; cursor: pointer; color: var(--holo); overflow: hidden;
+  container-type: inline-size; background: none; border: 0; padding: 0;
+}
+.holo-hotspot:focus-visible { outline: 2px solid var(--holo); outline-offset: 4px; }
+.holo-hotspot::after { content: ""; position: absolute; inset: 0; border-radius: inherit; transition: box-shadow .3s; }
+.holo-hotspot:hover::after { box-shadow: inset 0 0 0 1px rgba(46,230,255,.9), 0 0 40px rgba(46,230,255,.5); }
+.holo-cta { animation: cta 1.6s ease-in-out infinite; }
+@keyframes cta { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+
+/* ================= Zoom transition between the scene and the device ================= */
+.zoom-stage { transform-origin: var(--zx, 70%) var(--zy, 35%); transition: transform 1.25s cubic-bezier(.72,0,.82,.12), opacity 1.1s ease-in, filter 1.1s ease-in; }
+.zoom-stage.is-zooming { transform: scale(9); opacity: 0; filter: blur(6px); }
+.device-enter { animation: device-in 1s cubic-bezier(.16,1,.3,1) both; transform-origin: var(--zx, 70%) var(--zy, 35%); }
+@keyframes device-in { 0% { opacity: 0; transform: scale(.18); filter: blur(12px) brightness(2); } 60% { opacity: 1; filter: blur(0) brightness(1.4); } 100% { opacity: 1; transform: scale(1); filter: none; } }
+
+/* ================= Device screen ================= */
+.dev-panel {
+  position: relative; border-radius: 14px;
+  background: linear-gradient(180deg, rgba(14,34,74,.72), rgba(7,21,48,.72));
+  border: 1px solid rgba(46,230,255,.16);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 10px 30px rgba(0,0,0,.25);
+}
+.dev-panel.is-interactive { transition: border-color .2s; cursor: pointer; text-align: left; }
+.dev-panel.is-interactive:hover { border-color: rgba(46,230,255,.5); }
+.dev-panel.is-interactive:focus-visible { outline: 2px solid var(--holo); outline-offset: 2px; }
+.dev-title { font-size: 10.5px; letter-spacing: .14em; font-weight: 600; color: rgba(217,244,255,.78); text-transform: uppercase; }
+.dev-section { font-family: var(--font-geist-pixel-square), var(--font-geist-mono), monospace; letter-spacing: .22em; font-size: 12px; color: var(--holo); text-transform: uppercase; }
+.dev-num { font-variant-numeric: tabular-nums; font-weight: 600; letter-spacing: -.01em; }
+.region-marker { display: flex; align-items: center; gap: 6px; background: none; border: 0; padding: 4px; cursor: pointer; white-space: nowrap; will-change: transform; transition: opacity .2s; }
+.region-dot { flex: none; width: 8px; height: 8px; border-radius: 99px; background: var(--holo); box-shadow: 0 0 10px var(--holo); opacity: .55; transition: transform .2s, opacity .2s; }
+.region-marker:hover .region-dot, .region-marker:focus-visible .region-dot { opacity: 1; transform: scale(1.5); }
+.region-marker:focus-visible { outline: 1px solid var(--holo); border-radius: 6px; }
+.region-marker.is-minor .region-dot { background: var(--alert); box-shadow: 0 0 14px var(--alert); opacity: 1; width: 11px; height: 11px; animation: marker-pulse 1.6s infinite; }
+.region-marker.is-major .region-dot { background: var(--crit); box-shadow: 0 0 18px var(--crit); opacity: 1; width: 13px; height: 13px; animation: marker-pulse .9s infinite; }
+@keyframes marker-pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.45); } }
+.region-label { display: flex; flex-direction: column; font-size: 11px; line-height: 1.25; color: var(--ink); background: rgba(3,11,30,.82); border: 1px solid rgba(46,230,255,.35); border-radius: 8px; padding: 4px 8px; text-align: left; }
+.region-label em { font-style: normal; color: rgba(217,244,255,.65); font-size: 10.5px; }
+.region-marker.is-minor .region-label { border-color: var(--alert); }
+.region-marker.is-major .region-label { border-color: var(--crit); }
+.brief-in { animation: brief-in .45s cubic-bezier(.16,1,.3,1) both; }
+@keyframes brief-in { from { opacity: 0; transform: translateX(24px) scale(.98); } to { opacity: 1; transform: none; } }
+.dev-scroll { scrollbar-width: thin; scrollbar-color: rgba(46,230,255,.3) transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  .astro-float, .cosmo-float, .holo-cta, .region-dot,
+  #astro-Right-arm, #astro-Right-glove, #astro-Smartwatch, #astro-Holographic-projection-wrist-anchored,
+  #astro-Left-arm, #astro-Left-glove, #astro-Left-leg, #astro-Left-boot, #astro-Left-knee-pad,
+  [id^="astro-Holographic-particle"], [id^="astro-Corner-light"] { animation: none !important; }
+  .zoom-stage { transition-duration: .01s; }
+  .device-enter, .brief-in { animation-duration: .01s; }
+}
+.ecg-path { stroke-dasharray: 600; animation: ecg 2.4s linear infinite; }
+@keyframes ecg { from { stroke-dashoffset: 600; } to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) { .ecg-path { animation: none; stroke-dasharray: none; } }
+.zoom-flash {
+  background:
+    repeating-linear-gradient(0deg, rgba(46,230,255,.10) 0 1px, transparent 1px 28px),
+    repeating-linear-gradient(90deg, rgba(46,230,255,.10) 0 1px, transparent 1px 28px),
+    radial-gradient(circle at var(--zx) var(--zy), rgba(46,230,255,.35), rgba(3,11,30,.9) 60%);
+  animation: zoom-flash 1s ease-in both;
+}
+@keyframes zoom-flash { 0% { opacity: 0; } 55% { opacity: 0; } 85% { opacity: 1; } 100% { opacity: 1; } }

@@ -7,7 +7,9 @@
  *  - Breathing rate:            BIDMC records 03 and 02 (normal), 04 (scenario)
  *  - Skin temperature, stress:  generated here, labeled simulated
  *
- * A scenario phase (e.g. "hypoxia") fades between recordings over ~90 s. Any
+ * A scenario phase fades in over ~90 s and out over ~60 s. "hypoxia" fades
+ * SpO2 into the real low-SpO2 recording; "hypoxia-severe" adds a further
+ * simulated drop; "flank-pain" adds a simulated pain/stress response. Any
  * vital that gets a scenario shift on top of a recording is listed in
  * `reading.shifted` so the screen can label it simulated.
  */
@@ -16,7 +18,14 @@ import mmash from "@/data/clips/mmash-user22.json";
 import bidmc from "@/data/clips/bidmc.json";
 import type { Values, VitalKey } from "./vitals";
 
-export type StreamPhase = "normal" | "hypoxia";
+export type StreamPhase = "normal" | "hypoxia" | "hypoxia-severe" | "flank-pain";
+
+export const PHASES: { id: StreamPhase; label: string }[] = [
+  { id: "normal", label: "Normal day" },
+  { id: "hypoxia", label: "Mild hypoxia" },
+  { id: "hypoxia-severe", label: "Hypoxia worsening" },
+  { id: "flank-pain", label: "Flank pain" },
+];
 
 export interface Reading {
   /** Seconds since the stream started. */
@@ -71,7 +80,9 @@ function clockAt(t: number) {
 export class ReplayStream {
   private t = 0;
   private phase: StreamPhase = "normal";
-  private blend = 0;
+  private blend = 0; // hypoxia recording
+  private severe = 0; // extra simulated SpO2 drop
+  private pain = 0; // flank-pain stress response
   private rand = mulberry32(142);
   private last: Partial<Record<string, number>> = {};
 
@@ -97,11 +108,13 @@ export class ReplayStream {
 
   next(): Reading {
     const t = this.t++;
-    const target = this.phase === "hypoxia" ? 1 : 0;
-    this.blend = target > this.blend
-      ? Math.min(1, this.blend + 1 / RAMP_IN)
-      : Math.max(0, this.blend - 1 / RAMP_OUT);
-    const b = this.blend;
+    const ramp = (cur: number, on: boolean) =>
+      on ? Math.min(1, cur + 1 / RAMP_IN) : Math.max(0, cur - 1 / RAMP_OUT);
+    const p = this.phase;
+    this.blend = ramp(this.blend, p === "hypoxia" || p === "hypoxia-severe");
+    this.severe = ramp(this.severe, p === "hypoxia-severe");
+    this.pain = ramp(this.pain, p === "flank-pain");
+    const b = this.blend, sv = this.severe, pn = this.pain;
     const i = t % LIVE_LEN;
 
     // MMASH replay
@@ -116,17 +129,18 @@ export class ReplayStream {
     const respN = this.normal("resp", t);
     const spo2L = this.hold("l-spo2", REC["04"].spo2[j]);
     const respL = this.hold("l-resp", REC["04"].resp[j]);
-    const spo2 = spo2N == null || spo2L == null ? spo2N ?? spo2L : lerp(spo2N, spo2L, b);
+    const spo2Rec = spo2N == null || spo2L == null ? spo2N ?? spo2L : lerp(spo2N, spo2L, b);
+    const spo2 = spo2Rec == null ? null : spo2Rec - 5 * sv;
     const respBase = respN == null || respL == null ? respN ?? respL : lerp(respN, respL, b);
 
-    // Scenario shifts (simulated): faster heart and breathing, lower HRV as oxygen drops
-    const heartRate = hrRec == null ? null : hrRec + 9 * b;
-    const hrv = hrvRec == null ? null : hrvRec * (1 - 0.25 * b);
-    const respRate = respBase == null ? null : respBase + 3 * b;
+    // Scenario shifts (simulated): faster heart and breathing, lower HRV under strain
+    const heartRate = hrRec == null ? null : hrRec + 9 * b + 8 * sv + 22 * pn;
+    const hrv = hrvRec == null ? null : hrvRec * (1 - 0.25 * b - 0.15 * sv - 0.45 * pn);
+    const respRate = respBase == null ? null : respBase + 3 * b + 4 * sv + 5 * pn;
 
     // Generated signals (simulated)
     const noise = () => (this.rand() - 0.5) * 2;
-    const skinTemp = 33.6 + 0.12 * Math.sin((2 * Math.PI * t) / 900) + 0.03 * noise();
+    const skinTemp = 33.6 + 0.12 * Math.sin((2 * Math.PI * t) / 900) + 0.03 * noise() - 0.6 * pn;
     const stress = heartRate == null || hrv == null ? null
       : clamp(30 + 1.2 * (heartRate - 67) - 0.5 * (hrv - 42) + 2 * noise(), 0, 100);
 
@@ -134,8 +148,11 @@ export class ReplayStream {
       t,
       clock: clockAt(t),
       phase: this.phase,
-      blend: b,
-      shifted: b > 0 ? ["heartRate", "hrv", "respRate"] : [],
+      blend: Math.max(b, sv, pn),
+      shifted: [
+        ...(b + sv + pn > 0 ? (["heartRate", "hrv", "respRate"] as VitalKey[]) : []),
+        ...(sv > 0 ? (["spo2"] as VitalKey[]) : []),
+      ],
       values: { heartRate, hrv, spo2, respRate, skinTemp, stress, activity: steps },
     };
   }

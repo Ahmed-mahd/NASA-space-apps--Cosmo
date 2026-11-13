@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
-import Dashboard from "@/components/cosmo/Dashboard";
+import Experience from "@/components/Experience";
 
 export const metadata: Metadata = {
-  title: "COSMO | Live health dashboard",
+  title: "COSMO | Health monitor",
 };
 
 export default function CosmoPage() {
-  return <Dashboard />;
+  return <Experience initial="device" />;
 }

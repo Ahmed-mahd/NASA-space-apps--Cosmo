@@ -30,6 +30,15 @@ Extra precedent to cite: Astroskin/Bio-Monitor smart shirt (NASA + CSA).
 Done: app scaffold, landing page with glove + hologram (`src/components/GloveScene.tsx`), empty `/cosmo` shell, NASA knowledge base, walkthrough, Vercel live.
 Next (Phase 1 close → Phase 2): `src/lib/stream.ts`, `src/lib/baseline.ts`, vitals tiles and charts, body map, mission bar. Use a generated placeholder stream until the team supplies files.
 
+## State (Fri 23:59)
+Phase 2 done and the UI redesigned to Ahmed's Figma (Cosmo AI file: "cosmo character", "Astronaut parts" motion rig) and his reference device screen.
+- `/` landing: 3D space (procedural Earth, stars), astronaut rig (inline SVG, layers animated) facing Cosmo; click the wrist hologram -> zoom into the device. `/cosmo` opens the device directly. One client `Experience` component handles both.
+- Device: sensor column, 3D holographic body (`HoloBody.tsx`, 12 regions incl. kidneys for scenario 2), crew status, alerts, region briefs (orange = minor, red = major), tabs Body / Vitals / Mind / Radiation / Labs / Earth link, Cosmo dock with speech output.
+- `lib/conditions.ts` is the draft rule set (R-SLEEP-01, R-O2-01/02, R-HR-01/02, R-STRESS-01, R-FLANK-01), labeled example protocol. Needs Checkpoint C review.
+- Presenter: Shift+P (Normal, Mild hypoxia, Hypoxia worsening, Flank pain; 1x/5x/20x).
+- Regenerate assets: `node scripts/cut-clips.mjs data` (clips) and `node scripts/prepare-models.mjs` (Figma SVGs).
+Next: Phase 3 voice (speech in), model adapter + `/api/cosmo`, TRY-OBSERVE-REASSESS loop timing, ultrasound procedure steps.
+
 ## Answers from Ahmed (Fri 20:35)
 - **Scenario 1 is the mild-hypoxia story.** The astronaut reports fatigue and headache; SpO2 drifts below their personal baseline; Cosmo asks follow-ups, runs an approved check, reassesses. Source: NASA hypoxia risk page (symptoms: confusion, headache, vision problems, trouble sleeping).
 - **Nobody on the team is medically trained.** So: keep the rule file small and conservative, use only widely published reference ranges, show "example protocol, needs medical review" on every rule and in the "Why did Cosmo say that?" panel, never name a drug or dose, and say this limit plainly in the README. Suggest Ahmed ask a hackathon mentor to look over the rule file at Checkpoint C.
