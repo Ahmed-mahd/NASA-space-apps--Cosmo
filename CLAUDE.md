@@ -17,7 +17,7 @@ Cosmo is a **voice-only** AI health companion that lives in an astronaut's IoT g
 - **Model adapter:** OpenAI-compatible chat format so a hosted API and Ollama+Qwen are a settings swap. Key lives in Vercel env vars, never in chat or the repo.
 - **Thresholds** are labeled "example protocol, needs medical review". NASA pages give almost no numeric limits.
 - **Approved actions** come from the `countermeasures` NASA lists on each risk page (`src/data/nasa.ts`).
-- **Scenarios:** (1) fatigue and headache; (2) flank pain → kidney ultrasound check (Butterfly iQ+ as the named device, NASA AMOS as precedent) with a procedure video or animated steps, crewmate helps.
+- **Scenarios:** (1) fatigue and headache from mild hypoxia; (2) flank pain → kidney ultrasound check (Butterfly iQ+ as the named device, NASA AMOS as precedent) with a procedure video or animated steps, crewmate helps.
 - **Enhancements approved:** clickable hologram body mapped to the 17 NASA risks; "Why did Cosmo say that?" panel; Earth-delay comparison; daily quests and streaks; flight surgeon report on sync.
 - **Stack:** Next.js (App Router) on Vercel, Three.js via @react-three/fiber, Recharts, self-hosted Geist fonts (`geist` package; Google Fonts fetch fails in sandboxes), browser storage with a visible sync queue.
 
@@ -26,16 +26,20 @@ Keep: NASA HRP hazards, risks (+17 reference pages), ongoing research; CSA radia
 Dropped: OSD-53, 195, 918, 919, 923, 952, 1018; PPG-DaLiA; MHEALTH; MedDialog; MediTOD; SLURP; DSO 470 (not found).
 Extra precedent to cite: Astroskin/Bio-Monitor smart shirt (NASA + CSA).
 
-## State at handoff (Fri 20:30)
+## State at handoff (Fri 20:35)
 Done: app scaffold, landing page with glove + hologram (`src/components/GloveScene.tsx`), empty `/cosmo` shell, NASA knowledge base, walkthrough, Vercel live.
 Next (Phase 1 close → Phase 2): `src/lib/stream.ts`, `src/lib/baseline.ts`, vitals tiles and charts, body map, mission bar. Use a generated placeholder stream until the team supplies files.
 
+## Answers from Ahmed (Fri 20:35)
+- **Scenario 1 is the mild-hypoxia story.** The astronaut reports fatigue and headache; SpO2 drifts below their personal baseline; Cosmo asks follow-ups, runs an approved check, reassesses. Source: NASA hypoxia risk page (symptoms: confusion, headache, vision problems, trouble sleeping).
+- **Nobody on the team is medically trained.** So: keep the rule file small and conservative, use only widely published reference ranges, show "example protocol, needs medical review" on every rule and in the "Why did Cosmo say that?" panel, never name a drug or dose, and say this limit plainly in the README. Suggest Ahmed ask a hackathon mentor to look over the rule file at Checkpoint C.
+- **Model provider not chosen yet.** Build the adapter around three env vars so any provider works: `COSMO_MODEL_BASE_URL`, `COSMO_MODEL_API_KEY`, `COSMO_MODEL_NAME`. For local Qwen: base URL `http://localhost:11434/v1`, any key, model `qwen2.5` (check the current Ollama tag). Until a key exists, fall back to scripted replies so the demo still runs.
+
 ## Waiting on the team
-- MMASH zip, `bidmc_01..05_Numerics.csv`, OSD-575 metabolic panel file → cut into `src/data/clips/`.
-- Which model provider; key added in Vercel settings.
-- Open question 1: make scenario 1 a mild-hypoxia story (SpO2 drifting below baseline; NASA lists confusion, headache, vision problems, trouble sleeping)? Recommended yes.
-- Open question 2: is anyone medically trained to review the rule file?
+- MMASH zip, `bidmc_01..05_Numerics.csv`, OSD-575 metabolic panel file → cut into `src/data/clips/`. Sources: physionet.org/content/mmash/1.0.0/ , physionet.org/files/bidmc/1.0.0/bidmc_csv/ , osdr.nasa.gov/bio/repo/data/studies/OSD-575 (Files tab).
+- Model provider and key (added in Vercel → Settings → Environment Variables).
 - Checkpoint A: approve the 11 body regions and the signal table (walkthrough §2d).
+- Full research notes with source links (ultrasound devices, source verdicts, design) live in Ahmed's Claude project, not in this repo. Ask him to paste them when writing `docs/RESOURCES.md`.
 
 ## Working rules
 - Treat Ahmed as the senior engineer: consult at each checkpoint in the walkthrough.
