@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+:root {
+  --void: #03060d;
+  --deep: #07101f;
+  --holo: #5ee6ff;
+  --holo-dim: #1b6f86;
+  --amber: #ffb547;
+  --ok: #4dffa6;
+  --warn: #ffd84d;
+  --alert: #ff8a3d;
+  --crit: #ff4d6a;
+  --ink: #d9f4ff;
+}
+
+@theme inline {
+  --color-void: var(--void);
+  --color-deep: var(--deep);
+  --color-holo: var(--holo);
+  --color-holo-dim: var(--holo-dim);
+  --color-amber: var(--amber);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-alert: var(--alert);
+  --color-crit: var(--crit);
+  --color-ink: var(--ink);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html, body { height: 100%; }
+body {
+  background: radial-gradient(1200px 700px at 70% 20%, #0b1a33 0%, var(--void) 60%);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Hologram panel: thin glowing frame with scanlines */
+.holo-panel {
+  position: relative;
+  border: 1px solid color-mix(in srgb, var(--holo) 45%, transparent);
+  background: linear-gradient(180deg, rgba(94,230,255,.10), rgba(94,230,255,.03));
+  box-shadow: 0 0 24px rgba(94,230,255,.12), inset 0 0 24px rgba(94,230,255,.06);
+  backdrop-filter: blur(6px);
+  border-radius: 14px;
+}
+.holo-panel::after {
+  content: "";
+  position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  background: repeating-linear-gradient(180deg, rgba(94,230,255,.05) 0 1px, transparent 1px 4px);
+  mix-blend-mode: screen;
+}
+.holo-text { color: var(--holo); text-shadow: 0 0 12px rgba(94,230,255,.55); }
+.hud-label { font-family: var(--font-geist-mono), monospace; font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: color-mix(in srgb, var(--holo) 70%, white 0%); opacity: .8; }
+
+@keyframes flicker { 0%,100%{opacity:1} 48%{opacity:.92} 50%{opacity:.75} 52%{opacity:.95} }
+.flicker { animation: flicker 5s infinite; }
+@keyframes pulse-ring { 0%{transform:scale(.9);opacity:.8} 100%{transform:scale(1.6);opacity:0} }
+.pulse-ring { animation: pulse-ring 2s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) { .flicker, .pulse-ring { animation: none; } }
