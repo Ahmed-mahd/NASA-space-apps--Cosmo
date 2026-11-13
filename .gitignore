@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# raw dataset downloads (only cut clips in src/data/clips are committed)
+/data/
