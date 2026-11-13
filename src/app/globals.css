@@ -107,11 +107,16 @@ body {
 .holo-cta { animation: cta 1.6s ease-in-out infinite; }
 @keyframes cta { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
 
-/* ================= Zoom transition between the scene and the device ================= */
-.zoom-stage { transform-origin: var(--zx, 70%) var(--zy, 35%); transition: transform 1.25s cubic-bezier(.72,0,.82,.12), opacity 1.1s ease-in, filter 1.1s ease-in; }
-.zoom-stage.is-zooming { transform: scale(9); opacity: 0; filter: blur(6px); }
-.device-enter { animation: device-in 1s cubic-bezier(.16,1,.3,1) both; transform-origin: var(--zx, 70%) var(--zy, 35%); }
-@keyframes device-in { 0% { opacity: 0; transform: scale(.18); filter: blur(12px) brightness(2); } 60% { opacity: 1; filter: blur(0) brightness(1.4); } 100% { opacity: 1; transform: scale(1); filter: none; } }
+/* ================= Zoom transition between the scene and the device =================
+   Only transform + opacity animate, so the compositor runs it even while the device boots. */
+.zoom-stage { transform-origin: var(--zx, 70%) var(--zy, 35%); }
+.zoom-stage.is-zooming { position: relative; z-index: 30; will-change: transform, opacity; pointer-events: none;
+  animation: stage-zoom .85s cubic-bezier(.7,0,.84,0) forwards; }
+@keyframes stage-zoom { 0% { transform: scale(1); opacity: 1; } 70% { opacity: 1; } 100% { transform: scale(7); opacity: 0; } }
+.device-layer { position: fixed; inset: 0; z-index: 20; opacity: 0; transform: scale(.92); transform-origin: var(--zx, 70%) var(--zy, 35%); pointer-events: none; }
+.device-layer.is-shown { position: relative; z-index: 31; opacity: 1; transform: none; pointer-events: auto;
+  animation: device-in .6s cubic-bezier(.16,1,.3,1) both; }
+@keyframes device-in { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: none; } }
 
 /* ================= Device screen ================= */
 .dev-panel {
@@ -146,17 +151,19 @@ body {
   #astro-Right-arm, #astro-Right-glove, #astro-Smartwatch, #astro-Holographic-projection-wrist-anchored,
   #astro-Left-arm, #astro-Left-glove, #astro-Left-leg, #astro-Left-boot, #astro-Left-knee-pad,
   [id^="astro-Holographic-particle"], [id^="astro-Corner-light"] { animation: none !important; }
-  .zoom-stage { transition-duration: .01s; }
-  .device-enter, .brief-in { animation-duration: .01s; }
+  .zoom-stage.is-zooming, .device-layer.is-shown, .brief-in { animation-duration: .01s; }
 }
 .ecg-path { stroke-dasharray: 600; animation: ecg 2.4s linear infinite; }
 @keyframes ecg { from { stroke-dashoffset: 600; } to { stroke-dashoffset: 0; } }
 @media (prefers-reduced-motion: reduce) { .ecg-path { animation: none; stroke-dasharray: none; } }
-.zoom-flash {
-  background:
-    repeating-linear-gradient(0deg, rgba(46,230,255,.10) 0 1px, transparent 1px 28px),
-    repeating-linear-gradient(90deg, rgba(46,230,255,.10) 0 1px, transparent 1px 28px),
-    radial-gradient(circle at var(--zx) var(--zy), rgba(46,230,255,.35), rgba(3,11,30,.9) 60%);
-  animation: zoom-flash 1s ease-in both;
-}
-@keyframes zoom-flash { 0% { opacity: 0; } 55% { opacity: 0; } 85% { opacity: 1; } 100% { opacity: 1; } }
+
+/* Mind deck: Cosmo reacts while talking and laughing */
+.mind-talk { animation: mind-talk .5s ease-in-out infinite; }
+@keyframes mind-talk { 0%,100% { transform: translateY(0) rotate(-1deg); } 50% { transform: translateY(-3%) rotate(1.5deg); } }
+.mind-laugh { animation: mind-laugh .28s ease-in-out 6; }
+@keyframes mind-laugh { 0%,100% { transform: rotate(0) scale(1); } 25% { transform: rotate(-6deg) scale(1.04); } 75% { transform: rotate(6deg) scale(1.04); } }
+/* Voice orb */
+.voice-ring { transition: transform .12s ease-out, box-shadow .2s; }
+@keyframes listen-pulse { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(1.7); opacity: 0; } }
+.listen-pulse { animation: listen-pulse 1.2s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) { .mind-talk, .mind-laugh, .listen-pulse { animation: none; } }

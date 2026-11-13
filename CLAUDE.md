@@ -30,14 +30,13 @@ Extra precedent to cite: Astroskin/Bio-Monitor smart shirt (NASA + CSA).
 Done: app scaffold, landing page with glove + hologram (`src/components/GloveScene.tsx`), empty `/cosmo` shell, NASA knowledge base, walkthrough, Vercel live.
 Next (Phase 1 close → Phase 2): `src/lib/stream.ts`, `src/lib/baseline.ts`, vitals tiles and charts, body map, mission bar. Use a generated placeholder stream until the team supplies files.
 
-## State (Fri 23:59)
-Phase 2 done and the UI redesigned to Ahmed's Figma (Cosmo AI file: "cosmo character", "Astronaut parts" motion rig) and his reference device screen.
-- `/` landing: 3D space (procedural Earth, stars), astronaut rig (inline SVG, layers animated) facing Cosmo; click the wrist hologram -> zoom into the device. `/cosmo` opens the device directly. One client `Experience` component handles both.
-- Device: sensor column, 3D holographic body (`HoloBody.tsx`, 12 regions incl. kidneys for scenario 2), crew status, alerts, region briefs (orange = minor, red = major), tabs Body / Vitals / Mind / Radiation / Labs / Earth link, Cosmo dock with speech output.
-- `lib/conditions.ts` is the draft rule set (R-SLEEP-01, R-O2-01/02, R-HR-01/02, R-STRESS-01, R-FLANK-01), labeled example protocol. Needs Checkpoint C review.
-- Presenter: Shift+P (Normal, Mild hypoxia, Hypoxia worsening, Flank pain; 1x/5x/20x).
-- Regenerate assets: `node scripts/cut-clips.mjs data` (clips) and `node scripts/prepare-models.mjs` (Figma SVGs).
-Next: Phase 3 voice (speech in), model adapter + `/api/cosmo`, TRY-OBSERVE-REASSESS loop timing, ultrasound procedure steps.
+## State (Sat 01:45)
+- `/` landing: 3D space (procedural Earth), Figma astronaut rig facing Cosmo; tap the wrist hologram -> compositor-only zoom into the device (device mounts during the zoom; code + body mesh preloaded on idle).
+- Device body: real human mesh, MakeHuman base (CC0) baked by `scripts/bake-body.mjs data/makehuman` into `public/models/body.bin` (13,380 verts, 314 KB). Hologram skin + wireframe + point cloud; zones tint orange (minor) / red (major); organs inside; region markers projected from 3D.
+- Voice: `lib/voice.ts` (Chrome speech in/out, 3 voices), `lib/brain.ts` (on-board dialogue manager: intents, pending questions, TRY->OBSERVE->REASSESS via fast-forward), `lib/useConversation.ts`, `app/api/cosmo/route.ts` (OpenAI-compatible adapter, env vars below; rewords only, falls back to the on-board draft). Demo conversations: hypoxia and flank pain (crewmate + guided kidney scan, `ScanCard.tsx`).
+- Mind deck (`MindDeck.tsx`): voice check-in + mood weather, joke break, space trivia (NASA facts), box breathing, Earth window, voice journal.
+- Rules draft in `lib/conditions.ts` still needs Checkpoint C review. Presenter: Shift+P (scenarios, speed, typed backup line).
+- No model key set yet: the brain runs fully on board ("on-board scripted").
 
 ## Answers from Ahmed (Fri 20:35)
 - **Scenario 1 is the mild-hypoxia story.** The astronaut reports fatigue and headache; SpO2 drifts below their personal baseline; Cosmo asks follow-ups, runs an approved check, reassesses. Source: NASA hypoxia risk page (symptoms: confusion, headache, vision problems, trouble sleeping).

@@ -38,7 +38,7 @@ export default function Landing({ onOpen, zooming }: { onOpen: (origin: { x: num
   return (
     <div className="relative min-h-dvh overflow-x-hidden" onPointerMove={(e) => setTilt({ x: e.clientX / innerWidth - 0.5, y: e.clientY / innerHeight - 0.5 })}>
       <div className="fixed inset-0 -z-0">
-        <SpaceScene />
+        <SpaceScene paused={zooming} />
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_600px_at_75%_30%,rgba(13,89,255,.18),transparent_70%),radial-gradient(700px_500px_at_95%_80%,rgba(163,91,255,.14),transparent_70%)]" />
       </div>
 
@@ -149,7 +149,6 @@ export default function Landing({ onOpen, zooming }: { onOpen: (origin: { x: num
         <p className="mx-auto mt-10 max-w-6xl text-xs text-ink/45">COSMO, your companion beyond Earth. NASA Space Apps Challenge, Cairo 2026.</p>
       </section>
 
-      {zooming && <div className="pointer-events-none fixed inset-0 z-40" />}
     </div>
   );
 }

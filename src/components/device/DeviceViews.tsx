@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { csa, hazards, HAZARDS_SOURCE } from "@/data/nasa";
 import type { Condition } from "@/lib/conditions";
@@ -20,67 +19,6 @@ export function TrendsView({ state, focus, onFocus }: { state: VitalsState; focu
         ))}
       </div>
       <TrendChart meta={VITAL[focus]} dev={state.deviations[focus]} range={state.ranges[focus]} history={state.history} shifted={state.reading.shifted.includes(focus)} />
-    </div>
-  );
-}
-
-const MOODS = [
-  { id: "great", label: "Great", face: "😄" },
-  { id: "okay", label: "Okay", face: "🙂" },
-  { id: "tired", label: "Tired", face: "😪" },
-  { id: "low", label: "Low", face: "😔" },
-  { id: "stressed", label: "Stressed", face: "😣" },
-] as const;
-
-function Breathing() {
-  const [on, setOn] = useState(false);
-  const [phase, setPhase] = useState(0);
-  useEffect(() => {
-    if (!on) return;
-    const id = setInterval(() => setPhase((p) => (p + 1) % 3), 4000);
-    return () => clearInterval(id);
-  }, [on]);
-  const label = ["Breathe in", "Hold", "Breathe out"][phase];
-  const scale = phase === 2 ? 0.6 : 1;
-  return (
-    <div className="dev-panel flex flex-col items-center p-5">
-      <p className="dev-title self-start">Two-minute breathing with Cosmo</p>
-      <div className="my-5 grid h-40 w-40 place-items-center">
-        <div className="grid h-36 w-36 place-items-center rounded-full border border-violet/60"
-          style={{ transform: `scale(${on ? scale : 0.75})`, transition: "transform 4s ease-in-out", background: "radial-gradient(circle, rgba(163,91,255,.35), rgba(46,230,255,.08) 70%)", boxShadow: "0 0 50px rgba(163,91,255,.35)" }}>
-          <span className="text-sm">{on ? label : "Ready"}</span>
-        </div>
-      </div>
-      <button type="button" onClick={() => { setOn(!on); setPhase(0); }} className="rounded-full bg-violet px-5 py-2 text-sm font-medium text-white">
-        {on ? "Stop" : "Start breathing"}
-      </button>
-    </div>
-  );
-}
-
-export function MindView({ state, onMood, mood }: { state: VitalsState; onMood: (m: string) => void; mood: string | null }) {
-  const st = state.deviations.stress;
-  return (
-    <div className="dev-scroll grid h-full gap-3 overflow-y-auto pr-1 lg:grid-cols-2">
-      <div className="dev-panel p-5">
-        <p className="dev-title">Daily check-in</p>
-        <p className="mt-2 text-lg">How are you feeling right now?</p>
-        <p className="text-[12px] text-ink/60">In the glove this is a voice question. Tap an answer here.</p>
-        <div className="mt-4 grid grid-cols-5 gap-2">
-          {MOODS.map((m) => (
-            <button key={m.id} type="button" onClick={() => onMood(m.id)} aria-pressed={mood === m.id}
-              className={`flex flex-col items-center gap-1 rounded-xl border p-2.5 text-[12px] transition ${mood === m.id ? "border-violet bg-violet/20" : "border-holo/20 hover:border-holo/50"}`}>
-              <span className="text-2xl" aria-hidden>{m.face}</span>{m.label}
-            </button>
-          ))}
-        </div>
-        {mood && <p className="mt-3 text-sm text-ink/80">Logged. {mood === "great" || mood === "okay" ? "Love that. I'll remember this one." : "Thanks for telling me. Want to do two minutes of breathing together?"}</p>}
-        <div className="mt-5 grid grid-cols-2 gap-3 text-sm">
-          <div className="rounded-xl border border-holo/15 p-3"><p className="text-[11px] text-ink/60">Stress index</p><p className="dev-num text-2xl">{Math.round(st.value ?? 0)}<span className="text-xs text-ink/55">/100</span></p><p className="text-[10px] text-amber/80">Simulated from heart rate and HRV</p></div>
-          <div className="rounded-xl border border-holo/15 p-3"><p className="text-[11px] text-ink/60">Heart rate variability</p><p className="dev-num text-2xl">{Math.round(state.deviations.hrv.value ?? 0)}<span className="text-xs text-ink/55"> ms</span></p><p className="text-[10px] text-ink/45">MMASH replay</p></div>
-        </div>
-      </div>
-      <Breathing />
     </div>
   );
 }

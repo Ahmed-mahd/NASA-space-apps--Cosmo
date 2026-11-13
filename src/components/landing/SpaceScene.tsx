@@ -106,9 +106,9 @@ function Rig() {
   return null;
 }
 
-export default function SpaceScene() {
+export default function SpaceScene({ paused = false }: { paused?: boolean }) {
   return (
-    <Canvas camera={{ position: [0, 0, 6], fov: 50 }} dpr={[1, 1.75]} gl={{ antialias: true }} aria-hidden>
+    <Canvas camera={{ position: [0, 0, 6], fov: 50 }} dpr={[1, 1.5]} gl={{ antialias: true, powerPreference: "high-performance" }} frameloop={paused ? "never" : "always"} aria-hidden>
       <color attach="background" args={["#030b1e"]} />
       <ambientLight intensity={0.15} />
       <directionalLight position={[10, 4, 6]} intensity={1.6} />

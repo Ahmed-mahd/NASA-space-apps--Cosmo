@@ -1,0 +1,69 @@
+{
+ "vertexCount": 13380,
+ "indexCount": 80268,
+ "armSpanHalf": 0.7,
+ "landmarks": {
+  "1": {
+   "halfWidth": 0.398,
+   "front": 0.116,
+   "back": -0.151
+  },
+  "3.3": {
+   "halfWidth": 0.139,
+   "front": 0.239,
+   "back": -0.157
+  },
+  "3.1": {
+   "halfWidth": 0.164,
+   "front": 0.272,
+   "back": -0.14
+  },
+  "2.9": {
+   "halfWidth": 0.245,
+   "front": 0.154,
+   "back": -0.139
+  },
+  "2.7": {
+   "halfWidth": 0.398,
+   "front": 0.168,
+   "back": -0.23
+  },
+  "2.5": {
+   "halfWidth": 0.398,
+   "front": 0.224,
+   "back": -0.224
+  },
+  "2.3": {
+   "halfWidth": 0.397,
+   "front": 0.204,
+   "back": -0.201
+  },
+  "2.1": {
+   "halfWidth": 0.276,
+   "front": 0.205,
+   "back": -0.164
+  },
+  "1.9": {
+   "halfWidth": 0.31,
+   "front": 0.197,
+   "back": -0.217
+  },
+  "1.7": {
+   "halfWidth": 0.35,
+   "front": 0.164,
+   "back": -0.232
+  },
+  "1.5": {
+   "halfWidth": 0.38,
+   "front": 0.183,
+   "back": -0.16
+  },
+  "0.5": {
+   "halfWidth": 0.378,
+   "front": 0.035,
+   "back": -0.134
+  }
+ },
+ "source": "MakeHuman base mesh hm08 with young-male and muscle targets (makehumancommunity/makehuman on GitHub)",
+ "license": "CC0 1.0 (MakeHuman assets, released September 2020)"
+}

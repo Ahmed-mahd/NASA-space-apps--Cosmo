@@ -1,23 +1,29 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import mmash from "@/data/clips/mmash-user22.json";
+import type { MoodId } from "@/data/mind";
 import type { RegionId } from "@/data/regions";
+import { proactiveLine, type Action } from "@/lib/brain";
 import { crewStatus, evaluate, regionSeverity } from "@/lib/conditions";
-import { cosmoLine } from "@/lib/cosmoLines";
 import { PHASES } from "@/lib/stream";
+import { useConversation, type LiveContext } from "@/lib/useConversation";
 import { useVitals } from "@/lib/useVitals";
 import type { VitalKey } from "@/lib/vitals";
+import { LabsView, LinkView, RadiationView, TrendsView, type LogEntry } from "./DeviceViews";
 import GeneralColumn from "./GeneralColumn";
+import type { Activity } from "./MindDeck";
 import RegionBrief from "./RegionBrief";
+import ScanCard from "./ScanCard";
 import SensorColumn from "./SensorColumn";
-import { LabsView, LinkView, MindView, RadiationView, TrendsView, type LogEntry } from "./DeviceViews";
+import VoiceDock from "./VoiceDock";
 
 const HoloBody = dynamic(() => import("./HoloBody"), {
   ssr: false,
   loading: () => <div className="grid h-full place-items-center text-sm text-holo/70">Projecting hologram…</div>,
 });
+const MindDeck = dynamic(() => import("./MindDeck"), { ssr: false });
 
 type Tab = "body" | "trends" | "mind" | "radiation" | "labs" | "link";
 const TABS: { id: Tab; label: string }[] = [
@@ -38,15 +44,42 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
   const [focus, setFocus] = useState<VitalKey>("spo2");
   const [online, setOnline] = useState(true);
   const [log, setLog] = useState<LogEntry[]>([]);
-  const [mood, setMood] = useState<string | null>(null);
+  const [mood, setMood] = useState<MoodId | null>(null);
   const [presenter, setPresenter] = useState(false);
-  const [speaking, setSpeaking] = useState(false);
+  const [crewmate, setCrewmate] = useState(false);
+  const [scanStep, setScanStep] = useState(-1);
+  const [mindReq, setMindReq] = useState<{ activity: Activity; nonce: number } | null>(null);
 
   const conditions = useMemo(() => (state ? evaluate(state.deviations, phase) : []), [state, phase]);
   const status = crewStatus(conditions);
   const severity = useMemo(() => regionSeverity(conditions), [conditions]);
   const labels = useMemo(() => Object.fromEntries(conditions.map((c) => [c.region, c.short.split(",")[0]])) as Partial<Record<RegionId, string>>, [conditions]);
-  const line = cosmoLine(status, conditions, state?.reading.t ?? 0);
+
+  /* ---------- conversation wiring ---------- */
+  const live = useRef<LiveContext | null>(null);
+  useEffect(() => {
+    live.current = state ? { devs: state.deviations, conditions, status, phase } : null;
+  });
+  const clock = useRef("--:--:--");
+  useEffect(() => { if (state) clock.current = state.reading.clock; });
+  const addLog = useCallback((text: string, severity: LogEntry["severity"]) => {
+    setLog((l) => [...l, { time: clock.current, text, severity, synced: online }]);
+  }, [online]);
+
+  const run = useCallback((a: Action) => {
+    switch (a.type) {
+      case "phase": setPhase(a.phase); if (a.phase !== "flank-pain") { setScanStep(-1); } if (a.phase === "normal") setCrewmate(false); break;
+      case "openRegion": setTab("body"); setRegion(a.region); break;
+      case "tab": setTab(a.tab); break;
+      case "mind": setTab("mind"); setMindReq({ activity: a.activity, nonce: Date.now() }); break;
+      case "mood": setMood(a.mood); break;
+      case "log": addLog(a.text, a.severity); break;
+      case "crewmate": setCrewmate(a.present); break;
+      case "scan": setScanStep(a.step); setTab("body"); break;
+    }
+  }, [setPhase, addLog]);
+  const getCtx = useCallback(() => live.current, []);
+  const convo = useConversation(getCtx, run, setSpeed);
 
   // log condition onsets (queued while the Earth link is down)
   const seen = useRef(new Set<string>());
@@ -64,13 +97,20 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
-  // open the brief for a new major condition automatically
-  const majorId = conditions.find((c) => c.severity === "major")?.region ?? null;
-  const [lastMajor, setLastMajor] = useState<RegionId | null>(null);
-  if (majorId !== lastMajor) {
-    setLastMajor(majorId);
-    if (majorId) { setTab("body"); setRegion(majorId); }
+  // a new major condition: open its brief and, if nobody is talking, Cosmo speaks up
+  const major = conditions.find((c) => c.severity === "major") ?? null;
+  const [lastMajor, setLastMajor] = useState<string | null>(null);
+  if ((major?.id ?? null) !== lastMajor) {
+    setLastMajor(major?.id ?? null);
+    if (major) { setTab("body"); setRegion(major.region); }
   }
+  const announced = useRef<string | null>(null);
+  useEffect(() => {
+    if (!major) { announced.current = null; return; }
+    if (announced.current === major.id || convo.busy) return;
+    announced.current = major.id;
+    convo.announce([proactiveLine(major)], "crewmate");
+  }, [major, convo]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -81,28 +121,17 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const speak = () => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(line);
-    u.rate = 1.02; u.pitch = 1.1;
-    u.onend = () => setSpeaking(false);
-    setSpeaking(true);
-    window.speechSynthesis.speak(u);
-  };
-
   const openVital = (k: VitalKey) => { setFocus(k); setTab("trends"); };
   const statusColor = status === "alert" ? "var(--crit)" : status === "advisory" ? "var(--alert)" : "var(--ok)";
+  const sidePanel = scanStep >= 0 ? "scan" : region ? "brief" : null;
 
   return (
-    <div className="relative flex h-dvh min-h-[640px] flex-col gap-3 overflow-hidden p-3 md:p-4" style={{ background: "radial-gradient(1200px 800px at 50% 40%, #0a2150 0%, #030b1e 65%)" }}>
+    <div className="relative flex h-dvh min-h-[660px] flex-col gap-3 overflow-hidden p-3 md:p-4" style={{ background: "radial-gradient(1200px 800px at 50% 40%, #0a2150 0%, #030b1e 65%)" }}>
       {/* header */}
       <header className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
         <div className="flex items-center gap-3">
           {onExit && (
-            <button type="button" onClick={onExit} className="rounded-full border border-holo/30 px-3 py-1.5 text-xs text-ink/80 hover:border-holo" aria-label="Back to the mission view">
-              ← Mission view
-            </button>
+            <button type="button" onClick={onExit} className="rounded-full border border-holo/30 px-3 py-1.5 text-xs text-ink/80 hover:border-holo" aria-label="Back to the mission view">← Mission view</button>
           )}
           <span className="dev-section hidden md:inline">Sensor</span>
         </div>
@@ -110,42 +139,48 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
           COSMO · HUMAN BODY HEALTH MONITOR
         </h1>
         <div className="flex items-center justify-end gap-3 text-[11px]">
-          <span className="hidden text-ink/60 lg:inline">Transit · day 142 · {state?.reading.clock ?? "--:--:--"}</span>
+          <span className="hidden text-ink/60 xl:inline">Transit · day 142 · {state?.reading.clock ?? "--:--:--"}</span>
+          {crewmate && <span className="rounded-full border border-violet/60 px-2.5 py-1 text-violet">Crewmate mode</span>}
           <button type="button" onClick={() => setTab("link")} className="flex items-center gap-1.5 rounded-full border px-2.5 py-1" style={{ borderColor: online ? "rgba(61,255,176,.4)" : "rgba(255,154,61,.6)", color: online ? "var(--ok)" : "var(--alert)" }}>
             <span className="h-1.5 w-1.5 rounded-full" style={{ background: "currentColor" }} />{online ? "Earth link" : "Blackout"}
           </button>
-          <span className="hidden font-semibold tracking-wider md:inline" style={{ color: statusColor }}>
-            {status === "nominal" ? "ALL SYSTEMS OK" : status === "advisory" ? "ADVISORY" : "ALERT"}
+          <span className="dev-section hidden md:inline" style={{ color: statusColor }}>
+            {status === "nominal" ? "All systems OK" : status === "advisory" ? "Advisory" : "Alert"}
           </span>
         </div>
       </header>
 
       {/* main */}
-      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[280px_minmax(0,1fr)_300px]">
-        <div className="dev-scroll hidden min-h-0 overflow-y-auto lg:block">
+      <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[272px_minmax(0,1fr)_292px]">
+        <div className="dev-scroll hidden min-h-0 overflow-y-auto pr-0.5 lg:block">
           {state && <SensorColumn devs={state.deviations} history={state.history} onOpen={openVital} />}
         </div>
 
         <main className="relative min-h-[420px] min-w-0">
           {tab === "body" && (
             <div className="absolute inset-0">
-              <div className="pointer-events-none absolute inset-x-0 bottom-6 mx-auto h-24 w-[60%] rounded-[50%] bg-holo/10 blur-2xl" />
-              <div className={`absolute inset-y-0 left-0 transition-[right] duration-500 ease-out ${region ? "right-0 xl:right-[380px]" : "right-0"}`}>
+              <div className={`absolute inset-y-0 left-0 transition-[right] duration-500 ease-out ${sidePanel ? "right-0 xl:right-[380px]" : "right-0"}`}>
                 {state && (
                   <HoloBody severity={severity} labels={labels} selected={region} onSelect={setRegion}
                     heartRate={state.deviations.heartRate.value ?? 70} respRate={state.deviations.respRate.value ?? 16} />
                 )}
               </div>
-              <p className="pointer-events-none absolute left-2 top-1 text-[11px] text-ink/50">Drag to turn · tap a body area for its brief</p>
-              {region && (
-                <div className="absolute inset-y-0 right-0 z-30 w-full max-w-[400px] py-1">
-                  <RegionBrief region={region} conditions={conditions} onClose={() => setRegion(null)} />
+              <p className="pointer-events-none absolute left-2 top-1 text-[11px] text-ink/45">Drag to turn · tap a body area for its brief</p>
+              {sidePanel && (
+                <div className="dev-scroll absolute inset-y-0 right-0 z-30 w-full max-w-[380px] overflow-y-auto py-1">
+                  {sidePanel === "scan"
+                    ? <ScanCard step={scanStep} onClose={() => setScanStep(-1)} />
+                    : <RegionBrief region={region!} conditions={conditions} onClose={() => setRegion(null)} />}
                 </div>
               )}
             </div>
           )}
           {state && tab === "trends" && <TrendsView state={state} focus={focus} onFocus={setFocus} />}
-          {state && tab === "mind" && <MindView state={state} mood={mood} onMood={(m) => { setMood(m); setLog((l) => [...l, { time: state.reading.clock, text: `Mood check-in: ${m}.`, severity: "info", synced: online }]); }} />}
+          {state && tab === "mind" && (
+            <MindDeck request={mindReq} mood={mood} status={status}
+              onMood={(m) => { setMood(m); addLog(`Mood check-in: ${m}.`, "info"); }}
+              stress={state.deviations.stress.value} hrv={state.deviations.hrv.value} />
+          )}
           {tab === "radiation" && <RadiationView />}
           {tab === "labs" && <LabsView />}
           {tab === "link" && (
@@ -155,13 +190,13 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
           )}
         </main>
 
-        <div className="dev-scroll hidden min-h-0 overflow-y-auto lg:block">
+        <div className="dev-scroll hidden min-h-0 overflow-y-auto pr-0.5 lg:block">
           <GeneralColumn status={status} conditions={conditions} stepsToday={STEPS_BEFORE + Math.round(state?.stepsLive ?? 0)} onOpenRegion={(r) => { setTab("body"); setRegion(r); }} />
         </div>
       </div>
 
       {/* dock */}
-      <footer className="grid items-center gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+      <footer className="grid items-center gap-3 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
         <nav aria-label="Device screens" className="dev-panel flex gap-1 overflow-x-auto p-1.5">
           {TABS.map((t) => (
             <button key={t.id} type="button" onClick={() => setTab(t.id)} aria-current={tab === t.id ? "page" : undefined}
@@ -170,17 +205,11 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
             </button>
           ))}
         </nav>
-        <div className="dev-panel flex items-center gap-3 p-2 pr-3" style={{ borderColor: status === "alert" ? "var(--crit)" : undefined }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/models/cosmo-robot.svg" alt="" className="h-12 w-10 flex-none object-contain" />
-          <p className="flex-1 text-[13px] leading-snug" aria-live="polite"><b className="text-holo">Cosmo </b>{line}</p>
-          <button type="button" onClick={speak} className="flex-none rounded-full border border-violet/60 px-3 py-1.5 text-xs text-ink hover:bg-violet/20" aria-label="Hear Cosmo say this">
-            {speaking ? "Speaking…" : "▶ Hear"}
-          </button>
-        </div>
+        <VoiceDock engine={convo.engine} busy={convo.busy} demo={convo.demo} transcript={convo.transcript} alert={status === "alert"}
+          onTalk={convo.talk} onDemo={(id) => convo.playDemo(id)} onCancelDemo={convo.cancelDemo} />
       </footer>
 
-      <p className="pointer-events-none absolute bottom-[4.6rem] left-1/2 hidden -translate-x-1/2 text-[10px] text-ink/40 lg:block">
+      <p className="pointer-events-none absolute bottom-[4.7rem] left-1/2 hidden -translate-x-1/2 text-[10px] text-ink/40 lg:block">
         Simulation · replayed research data and simulated readings · example protocols, need medical review
       </p>
 
@@ -193,7 +222,7 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
           <p className="mt-2 text-ink/60">Scenario</p>
           <div className="mt-1 grid grid-cols-2 gap-1.5">
             {PHASES.map((p) => (
-              <button key={p.id} onClick={() => setPhase(p.id)} className={`rounded px-2 py-1.5 ${phase === p.id ? "bg-amber text-void" : "border border-amber/40 text-ink"}`}>{p.label}</button>
+              <button key={p.id} onClick={() => { setPhase(p.id); convo.reset(); if (p.id === "normal") { setScanStep(-1); setCrewmate(false); } }} className={`rounded px-2 py-1.5 ${phase === p.id ? "bg-amber text-void" : "border border-amber/40 text-ink"}`}>{p.label}</button>
             ))}
           </div>
           <p className="mt-2 text-ink/60">Speed</p>
@@ -203,7 +232,11 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
             ))}
             <button onClick={() => setPaused(!paused)} className="flex-1 rounded border border-amber/40 px-2 py-1 text-ink">{paused ? "Play" : "Pause"}</button>
           </div>
-          {state && <p className="mt-2 text-ink/50">Scenario blend {Math.round(state.reading.blend * 100)}%</p>}
+          <form className="mt-2" onSubmit={(e) => { e.preventDefault(); const f = e.currentTarget.elements.namedItem("say") as HTMLInputElement; if (f.value.trim()) { convo.handle(f.value.trim()); f.value = ""; } }}>
+            <label className="text-ink/60" htmlFor="say">Say as the astronaut (backup if the mic fails)</label>
+            <input id="say" name="say" className="mt-1 w-full rounded border border-amber/40 bg-void px-2 py-1 text-ink" placeholder="I have a headache" />
+          </form>
+          {state && <p className="mt-2 text-ink/50">Scenario blend {Math.round(state.reading.blend * 100)}% · brain: {convo.engine}</p>}
         </div>
       )}
     </div>
