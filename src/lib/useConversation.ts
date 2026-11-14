@@ -6,8 +6,10 @@ import type { Condition, CrewStatus } from "./conditions";
 import type { Deviation } from "./baseline";
 import type { StreamPhase } from "./stream";
 import type { VitalKey } from "./vitals";
+import { applyLearn, describe as describeMemory, emptyMemory, learnFromWords, loadMemory, saveMemory, type AstroMemory, type Learn } from "./memory";
 import {
-  enableWake, followUp, getVoiceState, goToSleep, initVoice, setCommandHandler, setThinking, speak, stopSpeaking, wait, wakePreference, wakeUp,
+  enableWake, followUp, getInterruptSeq, getVoiceState, goToSleep, initVoice, setBargeInHandler, setCommandHandler, setExpecting, setMuted,
+  setPatience, setThinking, speak, stopSpeaking, wait, wakePreference, wakeUp,
   type Speaker,
 } from "./voice";
 import { observe, type Observation } from "./watch";
@@ -110,22 +112,50 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
   const [engine, setEngine] = useState("on-board scripted");
   const [demo, setDemo] = useState<string | null>(null);
   const [expect, setExpect] = useState<Turn["expect"]>(undefined);
+  const [memory, setMemory] = useState<AstroMemory>(emptyMemory);
+  const astro = useRef<AstroMemory>(emptyMemory());
   const mem = useRef<Memory>({ pending: null, jokeIndex: 0, factIndex: 0, lastSaid: [], lastTurnAt: 0 });
+  const history = useRef<TranscriptLine[]>([]);
   const busyN = useRef(0);
   const demoOn = useRef(false);
   const stopDemo = useRef(false);
 
-  useEffect(() => {
-    initVoice();
-    fetch("/api/cosmo").then((r) => r.json()).then((d) => d.engine && setEngine(d.engine)).catch(() => {});
+  /** Learn something about the astronaut and keep it on the device. */
+  const learn = useCallback((list: Learn[]) => {
+    if (!list.length) return;
+    astro.current = applyLearn(astro.current, list);
+    saveMemory(astro.current);
+    setMemory(astro.current);
+    setPatience(astro.current.patience);
   }, []);
 
-  const add = (who: Speaker, text: string) => setTranscript((t) => [...t.slice(-60), { who, text, time: Date.now() }]);
+  useEffect(() => {
+    initVoice();
+    astro.current = loadMemory();
+    setMemory(astro.current);
+    setPatience(astro.current.patience);
+    // talked over Cosmo right after it started answering: next time, wait a little longer
+    setBargeInHandler(({ msSinceAnswerStarted }) => { if (msSinceAnswerStarted < 5000) learn([{ kind: "patience", ms: 250 }]); });
+    fetch("/api/cosmo").then((r) => r.json()).then((d) => d.engine && setEngine(d.engine)).catch(() => {});
+    return () => setBargeInHandler(null);
+  }, [learn]);
+
+  const add = (who: Speaker, text: string) => {
+    history.current = [...history.current.slice(-30), { who, text, time: Date.now() }];
+    setTranscript((t) => [...t.slice(-60), { who, text, time: Date.now() }]);
+  };
   const begin = () => { busyN.current++; setBusy(true); };
   const end = () => { busyN.current = Math.max(0, busyN.current - 1); if (!busyN.current) setBusy(false); mem.current.lastTurnAt = Date.now(); };
 
+  /** Speak lines in order; stops early if the astronaut talks over Cosmo. Returns false if interrupted. */
   const say = useCallback(async (lines: string[], who: Speaker = "cosmo") => {
-    for (const l of lines) { add(who, l); await speak(l, who); }
+    const seq = getInterruptSeq();
+    for (const l of lines) {
+      if (getInterruptSeq() !== seq) return false;
+      add(who, l);
+      await speak(l, who);
+    }
+    return getInterruptSeq() === seq;
   }, []);
 
   const ctxFor = (): BrainContext | null => {
@@ -135,6 +165,7 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
     return {
       devs: live.devs, conditions: live.conditions, status: live.status, phase: live.phase, clock: live.clock, stepsToday: live.stepsToday,
       pending: m.pending, jokeIndex: m.jokeIndex, factIndex: m.factIndex, lastSaid: m.lastSaid, lastIntent: m.lastIntent,
+      memory: astro.current,
     };
   };
 
@@ -147,6 +178,8 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
       m.lastIntent = turn.intent;
       m.expect = turn.expect;
       setExpect(turn.expect);
+      setExpecting(turn.expect);
+      if (turn.learn?.length) learn(turn.learn);
       let ff: { seconds: number; then: FollowUp } | null = null;
       for (const a of turn.actions) {
         if (a.type === "fastForward") { ff = a; continue; }
@@ -154,28 +187,38 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
       }
       let lines = turn.say;
       const c = getCtx();
-      if (lines.length && engine !== "on-board scripted" && c) {
+      if (lines.length && engine !== "on-board scripted" && c && utterance) {
         try {
           const d = c.devs;
           const res = await fetch("/api/cosmo", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ utterance, draft: lines, intent: turn.intent, status: c.status,
-              vitals: `HR ${Math.round(d.heartRate.recent ?? 0)}, SpO2 ${Math.round(d.spo2.recent ?? 0)}%, breathing ${Math.round(d.respRate.recent ?? 0)}/min` }),
+            body: JSON.stringify({
+              mode: turn.agent ? "chat" : "reword", utterance, draft: lines, intent: turn.intent, status: c.status,
+              vitals: `heart rate ${Math.round(d.heartRate.recent ?? 0)} (normal about ${Math.round(d.heartRate.mean)}), SpO2 ${Math.round(d.spo2.recent ?? 0)}%, breathing ${Math.round(d.respRate.recent ?? 0)}/min, stress ${Math.round(d.stress.recent ?? 0)}/100`,
+              history: history.current.slice(-12).map((h) => ({ who: h.who, text: h.text })),
+              memory: describeMemory(astro.current),
+              conditions: c.conditions.map((x) => ({ title: x.title, severity: x.severity, steps: x.steps })),
+            }),
           }).then((r) => r.json());
           if (Array.isArray(res.lines) && res.lines.length) lines = res.lines;
+          // the agent may start a whitelisted, non-medical action and suggest things to remember
+          for (const a of Array.isArray(res.actions) ? res.actions : []) {
+            if (a.type === "tab" || a.type === "mind" || a.type === "request" || a.type === "mood") run(a as Action);
+          }
+          if (Array.isArray(res.remember)) learn(res.remember.map((text: string) => ({ kind: "fact", text } as Learn)));
         } catch { /* keep the on-board draft */ }
       }
       setThinking(false);
-      if (lines.length) await say(lines);
-      if (turn.joke) {
+      let finished = lines.length ? await say(lines) : true;
+      if (turn.joke && finished) {
         m.jokeIndex++;
-        await say([turn.joke.setup]);
-        await wait(750);
-        await say([turn.joke.punch]);
+        finished = await say([turn.joke.setup]);
+        if (finished) { await wait(750); finished = await say([turn.joke.punch]); }
       }
       if (turn.fact) m.factIndex++;
       m.lastSaid = turn.joke ? [...lines, turn.joke.setup, turn.joke.punch] : lines;
+      if (!finished) return { ...turn, interrupted: true } as Turn;
       if (ff) {
         // TRY -> OBSERVE -> REASSESS: speed the simulation up while the astronaut waits, then recheck
         setThinking(true);
@@ -193,6 +236,8 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
   /** Keep the mic open after Cosmo speaks, longer when it asked something or during an alert. */
   const afterTurn = (last: Turn) => {
     if (demoOn.current) return;
+    // talked over: the voice layer is already listening to them
+    if ((last as Turn & { interrupted?: boolean }).interrupted) return;
     if (last.sleep) { goToSleep({ chime: true }); return; }
     const alert = getCtx()?.status === "alert";
     followUp(alert || last.expect === "yesno" ? 14000 : last.pending ? 10000 : 7000);
@@ -201,6 +246,7 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
   const handle = useCallback(async (text: string) => {
     const c = ctxFor();
     if (!c) return;
+    learn(learnFromWords(text));
     begin();
     try {
       const last = await playRef.current(respond(text, c), text);
@@ -211,7 +257,10 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
 
   /** Words from the astronaut (heard by the recognizer, tapped, or typed by the presenter). */
   const heard = useCallback(async (text: string) => {
-    if (demoOn.current || busyN.current) { setThinking(false); return; }
+    if (demoOn.current) { setThinking(false); return; }
+    // Cosmo is still finishing a turn (it was just interrupted): wait for it instead of dropping the words
+    for (let i = 0; i < 40 && busyN.current; i++) await wait(100);
+    if (busyN.current) { setThinking(false); return; }
     add("astronaut", text);
     await handle(text);
   }, [handle]);
@@ -266,6 +315,7 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
     if (busyN.current) return;
     begin();
     demoOn.current = true;
+    setMuted(true);
     stopDemo.current = false;
     setDemo(DEMOS[id].title);
     goToSleep();
@@ -304,6 +354,7 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
       }
     } finally {
       demoOn.current = false;
+      setMuted(false);
       setDemo(null);
       setExpect(undefined);
       end();
@@ -316,5 +367,6 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
   const pendingNow = () => mem.current.pending;
   const idleFor = () => (busyN.current ? 0 : Date.now() - mem.current.lastTurnAt);
 
-  return { transcript, busy, engine, demo, expect, talk, handle, heard, say, announce, checkIn, playDemo, cancelDemo, reset, pendingNow, idleFor };
+  const forget = () => learn([{ kind: "forget" }]);
+  return { transcript, busy, engine, demo, expect, memory, forget, talk, handle, heard, say, announce, checkIn, playDemo, cancelDemo, reset, pendingNow, idleFor };
 }

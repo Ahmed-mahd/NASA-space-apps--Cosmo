@@ -16,9 +16,11 @@ import {
   type Feeling, type FeelingId, type MoodId, type PlanId, type TopicId,
 } from "@/data/mind";
 import { hazards, risks } from "@/data/nasa";
+import osd from "@/data/clips/osd575.json";
 import type { RegionId } from "@/data/regions";
 import type { Deviation } from "./baseline";
-import { ALONE_CHECKS, type Condition, type CrewStatus, type ReportKind, type YesNoCheck } from "./conditions";
+import { ALONE_CHECKS, glucoseRule, type Condition, type CrewStatus, type ReportKind, type YesNoCheck } from "./conditions";
+import { bestHelper, describe as describeMemory, planWords, type AstroMemory, type Learn } from "./memory";
 import type { StreamPhase } from "./stream";
 import type { VitalKey } from "./vitals";
 import { stripWake } from "./wake";
@@ -30,6 +32,7 @@ export type CheckTopic = "hr" | "stress" | "o2" | "o2-trend" | "rr" | "temp";
 
 export type Offer =
   | { kind: "joke" }
+  | { kind: "glucose" }
   | { kind: "activity"; activity: MindActivity }
   | { kind: "plan"; plan: PlanId };
 
@@ -42,7 +45,8 @@ export type Pending =
   | { kind: "crewmate"; cond: string }
   | { kind: "crew-o2" }
   | { kind: "scan"; step: number; self: boolean }
-  | { kind: "yesno"; cond: string; i: number; tries: number }
+  | { kind: "yesno"; cond: string; i: number; tries: number; unclear?: number }
+  | { kind: "glucose"; tries: number }
   | { kind: "emergency"; i: number }
   | { kind: "explore"; feeling: FeelingId; stage: "cause" | "duration" | "helps"; topic?: TopicId; long?: boolean }
   | { kind: "offer"; offer: Offer; long?: boolean; fallback?: boolean }
@@ -84,6 +88,8 @@ export interface BrainContext {
   lastIntent?: string;
   clock?: string;
   stepsToday?: number;
+  /** What Cosmo has learned about this astronaut (memory.ts). */
+  memory?: AstroMemory;
 }
 
 export interface Turn {
@@ -96,9 +102,13 @@ export interface Turn {
   /** This turn used up a fun fact (so the next one is different). */
   fact?: boolean;
   /** How Cosmo expects the answer, for the on-screen hint. */
-  expect?: "yesno" | "number" | "open";
+  expect?: "yesno" | "number" | "reading" | "open";
   /** The conversation is over: go back to waiting for "Hey Cosmo". */
   sleep?: boolean;
+  /** Things to remember about the astronaut. */
+  learn?: Learn[];
+  /** No script fits: let the language model answer (the draft is the fallback). */
+  agent?: boolean;
 }
 
 /* ================= helpers ================= */
@@ -235,7 +245,14 @@ function vitalAnswer(t: string, c: BrainContext): Turn | null {
     return T("vital-radiation", ["About 71 millisieverts so far this mission. The dose readings are simulated in this demo."], show ? [{ type: "tab", tab: "radiation" }] : []);
   if (/blood pressure|\bbp\b/.test(t))
     return T("vital-bp", ["Your last cuff reading was 118 over 76, taken at 7:40. That one is a preset value in this demo."]);
-  if (/\blabs?\b|blood (test|work|panel)|metabolic|glucose/.test(t))
+  if (/blood sugar|glucose|sugar level|my sugar|blood glucose/.test(t)) {
+    const g = (osd as { analytes: Record<string, { crew: Record<string, Record<string, number>> }> }).analytes.glucose.crew.C001;
+    return T("vital-glucose", [
+      "Your last finger-stick this morning at 7:40 was 92, inside the usual fasting range of about 70 to 99. That reading is a preset for the demo.",
+      `Before launch your lab panel ranged from ${Math.min(...Object.values(g))} to ${Math.max(...Object.values(g))}. Want to do a fresh finger-stick check now? I'll walk you through it.`,
+    ], [], { kind: "offer", offer: { kind: "glucose" } }, { expect: "yesno" });
+  }
+  if (/\blabs?\b|blood (test|work|panel)|metabolic/.test(t))
     return T("vital-labs", ["Your lab panel comes from real Inspiration4 crew data. I've opened it for you."], [{ type: "tab", tab: "labs" }]);
   return null;
 }
@@ -339,6 +356,23 @@ function aloneStart(condId: string, c: BrainContext): Turn {
 }
 
 const CLOSING = "I've sent your answers to the flight surgeon. I'm right here with you.";
+
+/**
+ * Understand an answer to a yes/no question, including sentences that never say
+ * yes or no ("I was just sitting finishing some work" means "not exercising").
+ */
+export function interpret(q: YesNoCheck | undefined, raw: string): "yes" | "no" | null {
+  const t = normalize(raw);
+  const plain = yesNo(raw);
+  if (/^(yes|yeah|yep|yup|no|nope|nah|not)\b/.test(t.replace(/^(um+|uh+|well|oh|so)[\s,]+/, ""))) return plain;
+  if (q?.noCues?.test(t)) return "no";
+  if (q?.yesCues) {
+    const m = q.yesCues.exec(t);
+    if (m && !/\b(not|n't|never|no)\s+(?:\w+\s+)?$/.test(t.slice(0, m.index))) return "yes";
+  }
+  return plain;
+}
+const wordCount = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
 
 function answerYesNo(p: Extract<Pending, { kind: "yesno" }>, a: "yes" | "no", c: BrainContext): Turn {
   const checks = checksFor(p.cond), q = checks[p.i];
@@ -452,9 +486,9 @@ function exploreStart(f: Feeling, t: string): Turn {
   if (gaveCause) {
     const nextQ = f.duration ? DURATION_Q : HELPS_Q;
     return T("feeling", [first(f.ask), reflectFor(topic), nextQ], acts,
-      { kind: "explore", feeling: f.id, stage: f.duration ? "duration" : "helps", topic }, { expect: "open" });
+      { kind: "explore", feeling: f.id, stage: f.duration ? "duration" : "helps", topic }, { expect: "open", learn: [{ kind: "mood", mood: f.mood }, { kind: "topic", topic }] });
   }
-  return T("feeling", [f.ask], acts, { kind: "explore", feeling: f.id, stage: "cause" }, { expect: "open" });
+  return T("feeling", [f.ask], acts, { kind: "explore", feeling: f.id, stage: "cause" }, { expect: "open", learn: [{ kind: "mood", mood: f.mood }] });
 }
 
 const PLAN_OFFER: Record<PlanId, string> = {
@@ -479,8 +513,16 @@ function planOffer(plan: PlanId, long: boolean): Turn {
 
 const LATER = "I'm here whenever you want to talk. Can I check in on you later today?";
 
+function glucoseStart(): Turn {
+  return T("glucose-check", [
+    "Okay. Wash and dry your hands, then prick the side of a fingertip with the lancet.",
+    "Touch the test strip to the drop, and read me the number on the meter when it shows.",
+  ], [{ type: "log", text: "Guided finger-stick glucose check started.", severity: "info" }], { kind: "glucose", tries: 0 }, { expect: "reading" });
+}
+
 function runOffer(offer: Offer, long: boolean, c: BrainContext): Turn {
   if (offer.kind === "joke") return tellJoke(c);
+  if (offer.kind === "glucose") return glucoseStart();
   const activity = offer.kind === "activity" ? offer.activity
     : offer.plan === "earth" ? "earth" : offer.plan === "journal" ? "journal" : offer.plan === "breathing" ? "breathing" : offer.plan === "trivia" ? "trivia" : null;
   if (activity) return T("activity", ["Opening it now."], [{ type: "tab", tab: "mind" }, { type: "mind", activity }]);
@@ -506,6 +548,34 @@ function runOffer(offer: Offer, long: boolean, c: BrainContext): Turn {
 
 /* ================= jokes and fun ================= */
 
+/* ================= knowledge (NASA risk pages) ================= */
+
+const TOPIC_WORDS: [RegExp, string][] = [
+  [/\bbones?\b|bone (loss|density)|osteo|skeleton/, "bone"], [/\bsans\b|eye|vision|optic/, "sans"], [/sleep|insomnia|circadian|body clock/, "sleep"],
+  [/muscle|fitness|exercise (in|up)/, "fitness"], [/immune|infection|virus|allerg/, "immune"], [/hypoxia|low oxygen/, "hypoxia"],
+  [/decompression|the bends/, "dcs"], [/microbe|bacteria|germs/, "microbes"], [/nutrition|food|diet|vitamin/, "nutrition"],
+  [/spacewalk|\beva\b/, "eva"], [/teamwork|crew conflict|getting along/, "teamwork"], [/mental health|isolation|depression|anxiety|psycholog|behaviou?r/, "behavior"],
+  [/cancer/, "cancer"], [/motion sickness|space sickness|balance|vestibular|dizzy in space/, "sensorimotor"], [/heart|cardio|blood pressure in space/, "cardiovascular"],
+  [/radiation|cosmic ray|solar (flare|particle)/, "radiation"],
+];
+
+function knowledge(t: string): Turn | null {
+  if (!/^(what|why|how|tell me|explain|does|do|can|is|are|what's|whats)\b|\?$/.test(t) || /\bmy\b/.test(t)) return null;
+  // questions about Cosmo itself ("do you sleep") are small talk, not science
+  if (/\byou\b/.test(t) && !/tell me|explain|teach/.test(t)) return null;
+  const hit = TOPIC_WORDS.find(([re]) => re.test(t));
+  if (!hit) return null;
+  if (hit[1] === "radiation") {
+    const h = hazards.find((x) => x.id === "radiation")!;
+    return T("knowledge", [`${h.summary} ${h.facts[0] ?? ""}`.trim(), "Want me to open your radiation screen?"], [], { kind: "offer", offer: { kind: "activity", activity: "earth" } }, { expect: "yesno", agent: false });
+  }
+  const r = risks.find((x) => x.id === hit[1]);
+  if (!r) return null;
+  const cm = r.countermeasures.filter((c) => !/medication|bisphosphonate|drug/i.test(c));
+  const lines = [r.what, cm.length ? `NASA's countermeasures include ${cm.slice(0, 3).join(", ").toLowerCase()}.` : "", r.numbers[0] ?? ""].filter(Boolean);
+  return T("knowledge", lines.slice(0, 3), [{ type: "openRegion", region: r.region }]);
+}
+
 export function tellJoke(c: BrainContext, gentle = false): Turn {
   const j = JOKES[c.jokeIndex % JOKES.length];
   // humor follows severity: gentle while something minor is going on (last night's short sleep doesn't count)
@@ -521,6 +591,17 @@ function factTurn(c: BrainContext): Turn {
 
 /* ================= the answer to "what did you say?" ================= */
 
+function handleDecline(p: Extract<Pending, { kind: "offer" }>, c: BrainContext): Turn {
+  void c;
+  if (p.offer.kind === "plan" && p.offer.plan === "psych-conference" && !p.fallback) return T("no-psych", ["That's okay. The option is always there. " + LATER], [], { kind: "check-later" }, { expect: "yesno" });
+  if (!p.fallback) {
+    const wasEarth = p.offer.kind === "activity" && p.offer.activity === "earth";
+    return T("offer-alt", [wasEarth ? "No problem. Would a two-minute breathing break help instead?" : "No problem. Would a minute at the Earth window help instead?"], [],
+      { kind: "offer", offer: { kind: "activity", activity: wasEarth ? "breathing" : "earth" }, fallback: true }, { expect: "yesno" });
+  }
+  return T("offer-none", ["Alright. I'm here whenever you need me. Just say Hey Cosmo."], [], null, { sleep: true });
+}
+
 function handlePending(t: string, raw: string, c: BrainContext): Turn | null {
   const p = c.pending;
   if (!p) return null;
@@ -529,18 +610,40 @@ function handlePending(t: string, raw: string, c: BrainContext): Turn | null {
       const crewNo = /alone|by myself|on my own|nobody|no one|no-one|just me/.test(t);
       const crewYes = !crewNo && /\b(here|with me|next to me|nearby|coming|on (her|his|their) way|beside me)\b/.test(t);
       const a = crewNo ? "no" : crewYes ? "yes" : yesNo(raw);
-      if (!a) return T("crewmate-unclear", ["Just yes or no is fine. Is a crewmate with you?"], [], p, { expect: "yesno" });
+      if (!a) return T("crewmate-unclear", ["Sorry, I didn't quite catch that. Is a crewmate with you right now?"], [], p, { expect: "yesno" });
       return a === "yes" ? crewmateTurn(p.cond, c) : aloneStart(p.cond, c);
     }
     case "yesno": {
-      const a = yesNo(raw);
-      if (!a) return T("yesno-unclear", [`Just yes or no is fine. ${checksFor(p.cond)[p.i]?.q ?? ""}`], [], p, { expect: "yesno" });
-      return answerYesNo(p, a, c);
+      const q = checksFor(p.cond)[p.i];
+      const a = interpret(q, raw);
+      if (!a) {
+        if ((p.unclear ?? 0) < 1) {
+          return T("yesno-unclear", [`Sorry, I want to be sure I got that right. ${q?.q ?? ""}`], [], { ...p, unclear: (p.unclear ?? 0) + 1 }, { expect: "yesno" });
+        }
+        // asked twice: note it as unsure and move on, never badger
+        const next = checksFor(p.cond)[p.i + 1];
+        const acts: Action[] = [{ type: "log", text: `${q?.log ?? "Answer"}: unsure.`, severity: "major" }];
+        if (!next) return T("yesno-done", ["That's okay, I'll note it as unsure.", CLOSING], acts);
+        return T("yesno", ["That's okay, I'll note it as unsure.", next.q], acts, { kind: "yesno", cond: p.cond, i: p.i + 1, tries: 0 }, { expect: "yesno" });
+      }
+      const turn = answerYesNo(p, a, c);
+      // they explained instead of just yes/no: acknowledge it
+      if (wordCount(raw) > 4 && turn.say.length) turn.say = [`Thanks for telling me. ${turn.say[0]}`, ...turn.say.slice(1)];
+      return turn;
     }
     case "emergency": {
       const a = yesNo(raw);
-      if (!a) return T("emergency-unclear", [`Just yes or no. ${EMERGENCY_QS[p.i]}`], [], p, { expect: "yesno" });
+      if (!a) return T("emergency-unclear", [`Sorry, I didn't catch that. ${EMERGENCY_QS[p.i]}`], [], p, { expect: "yesno" });
       return emergencyStep(p.i, a);
+    }
+    case "glucose": {
+      const n = t.match(/\b(\d{2,3})\b/)?.[1];
+      if (n) {
+        const r = glucoseRule(Number(n));
+        return T("glucose-result", r.say, [{ type: "log", text: r.log, severity: r.severity === "major" ? "major" : r.severity === "minor" ? "minor" : "info" }, { type: "tab", tab: "labs" }]);
+      }
+      if (p.tries < 1 && !/stop|cancel|later|never ?mind/.test(t)) return T("glucose-wait", ["Take your time. Just read me the number on the meter when it shows."], [], { kind: "glucose", tries: 1 }, { expect: "reading" });
+      return null;
     }
     case "crew-o2": {
       if (/done|running|started|on\b|ready|okay|ok\b|yes|finished/.test(t)) {
@@ -584,8 +687,12 @@ function handlePending(t: string, raw: string, c: BrainContext): Turn | null {
     }
     case "recheck-symptom": {
       if (/better|fine|good|gone|great|improv|ok(ay)?|alright/.test(t) && !/not (better|good|great|fine)/.test(t)) {
-        return T("recovered", ["Great news. I've logged the whole episode for the flight surgeon.", "And since you're feeling better, can I tell you a joke? It's a good one. Probably."],
-          [{ type: "log", text: "Symptoms resolved after rest. Logged for the flight surgeon.", severity: "info" }], { kind: "offer", offer: { kind: "joke" } }, { expect: "yesno" });
+        const notAFan = (c.memory?.jokes.groans ?? 0) >= (c.memory?.jokes.laughs ?? 0) + 2;
+        return T("recovered", ["Great news. I've logged the whole episode for the flight surgeon.",
+          notAFan ? "And since you're feeling better, fancy a quick round of space trivia? I know my puns aren't your thing." : "And since you're feeling better, can I tell you a joke? It's a good one. Probably."],
+          [{ type: "log", text: "Symptoms resolved after rest. Logged for the flight surgeon.", severity: "info" }],
+          { kind: "offer", offer: notAFan ? { kind: "activity", activity: "trivia" } : { kind: "joke" } },
+          { expect: "yesno", learn: [{ kind: "episode", text: "Low oxygen with headache and tiredness; resting brought it back to normal." }] });
       }
       if (/worse|still|same|bad|not (better|good|great)/.test(t)) {
         return T("not-better", ["Thanks for telling me. Let's keep resting and I'll recheck again in five minutes. If it gets worse, I'll raise this to a major alert."],
@@ -595,7 +702,15 @@ function handlePending(t: string, raw: string, c: BrainContext): Turn | null {
     }
     case "offer": {
       const a = yesNo(raw);
-      if (a === "yes") return runOffer(p.offer, !!p.long, c);
+      const plan = p.offer.kind === "plan" ? p.offer.plan : null;
+      if (a === "yes") {
+        const turn = runOffer(p.offer, !!p.long, c);
+        return plan ? { ...turn, learn: [...(turn.learn ?? []), { kind: "helped", plan }] } : turn;
+      }
+      if (a === "no" && plan) {
+        const turn = handleDecline(p, c);
+        return { ...turn, learn: [...(turn.learn ?? []), { kind: "declined", plan }] };
+      }
       if (a === "no") {
         if (p.offer.kind === "joke") return T("no-joke", ["Fair enough. I'll save it for later. It's not getting any less funny."], [], null, { sleep: true });
         if (p.offer.kind === "plan" && p.offer.plan === "psych-conference" && !p.fallback) return T("no-psych", ["That's okay. The option is always there. " + LATER], [], { kind: "check-later" }, { expect: "yesno" });
@@ -614,15 +729,25 @@ function handlePending(t: string, raw: string, c: BrainContext): Turn | null {
       if (p.stage === "cause") {
         const topic = topicOf(t);
         const f = FEELINGS.find((x) => x.id === p.feeling)!;
-        if (f.duration) return T("explore-cause", [reflectFor(topic), DURATION_Q], [], { ...p, stage: "duration", topic }, { expect: "open" });
-        return T("explore-cause", [reflectFor(topic), HELPS_Q], [], { ...p, stage: "helps", topic }, { expect: "open" });
+        const seen = topic !== "other" && topic !== "unknown" && (c.memory?.topics[topic] ?? 0) >= 1;
+        const reflect = seen ? `${reflectFor(topic)} And this has come up before, so it's clearly been weighing on you.` : reflectFor(topic);
+        const learn: Learn[] = [{ kind: "topic", topic }];
+        if (f.duration) return T("explore-cause", [reflect, DURATION_Q], [], { ...p, stage: "duration", topic }, { expect: "open", learn });
+        return T("explore-cause", [reflect, HELPS_Q], [], { ...p, stage: "helps", topic }, { expect: "open", learn });
       }
       if (p.stage === "duration") {
         const long = /while|weeks?|days|months|long time|ages|always|since|for a bit|on and off|lately|a lot|building/.test(t) && !/^(just |only |mostly )?today|just now|this morning|tonight\b/.test(t);
         const lead = long ? "Thanks for telling me. When something has been building for a while, it's worth talking to someone trained for it, and I can set that up." : "Okay. Good to know it's recent.";
         return T("explore-duration", [lead, HELPS_Q], [], { ...p, stage: "helps", long }, { expect: "open" });
       }
-      return planOffer(planOf(t, p.topic), !!p.long);
+      const plan = planOf(t, p.topic);
+      // "I don't know": suggest what has worked for this astronaut before
+      const known = plan === "options" ? bestHelper(c.memory) : null;
+      if (known) {
+        return T("plan-offer", [`That's okay. Last time, ${planWords(known)} helped you. Want to try that again?`], [],
+          { kind: "offer", offer: { kind: "plan", plan: known }, long: p.long }, { expect: "yesno" });
+      }
+      return planOffer(plan, !!p.long);
     }
     case "check-in": {
       if (feelingOf(t) || HYPOXIA_SYM.test(t) || PAIN.test(t) || NAUSEA.test(t) || CHEST.test(t) || CANT_BREATHE.test(t)) return null;
@@ -671,9 +796,9 @@ function handlePending(t: string, raw: string, c: BrainContext): Turn | null {
     case "joke-reaction": {
       if (/another|one more|again|more|next/.test(t)) return tellJoke(c);
       if (/ha(ha)+|\blol\b|lmao|funny|good one|hilarious|nice one|love it|\bha\b|that'?s great/.test(t) && !/not funny/.test(t))
-        return T("laugh", [LAUGH_REPLIES[c.jokeIndex % LAUGH_REPLIES.length]], [], null, { sleep: true });
+        return T("laugh", [LAUGH_REPLIES[c.jokeIndex % LAUGH_REPLIES.length]], [], null, { sleep: true, learn: [{ kind: "joke", laughed: true }] });
       if (/bad|terrible|awful|lame|corny|cringe|\bboo\b|ugh|not funny|groan|dad joke|worst/.test(t))
-        return T("groan", [GROAN_REPLIES[c.jokeIndex % GROAN_REPLIES.length]], [], null, { sleep: true });
+        return T("groan", [GROAN_REPLIES[c.jokeIndex % GROAN_REPLIES.length]], [], null, { sleep: true, learn: [{ kind: "joke", laughed: false }] });
       return null;
     }
   }
@@ -814,6 +939,26 @@ export function respond(text: string, c: BrainContext): Turn {
   }
   if (/fun fact|tell me something|interesting|did you know|teach me|space fact/.test(t)) return factTurn(c);
 
+  /* ---- what Cosmo remembers ---- */
+  const name = /\b(?:my name is|call me|i'?m called|you can call me)\s+([a-z][a-z'-]{1,20})/i.exec(raw);
+  if (name && !/^(fine|okay|ok|good|tired|sad|here|alone|sorry|not|so|just|feeling|really|very|lonely|stressed|bored)$/i.test(name[1])) {
+    const n = name[1].charAt(0).toUpperCase() + name[1].slice(1);
+    return T("learn-name", [`Nice to meet you properly, ${n}. I'll remember that.`], [], null, { learn: [{ kind: "name", name: n }] });
+  }
+  if (/\b(forget (everything|all|what i (told|said)|about me)|delete (my|your) (data|memory)|clear (your|my) memory|wipe your memory)\b/.test(t)) {
+    return T("forget", ["Done. I've forgotten everything you told me. Fresh start."], [], null, { learn: [{ kind: "forget" }] });
+  }
+  if (/what do you (know|remember) about me|what have you learned|do you remember (me|anything)|what do you remember/.test(t)) {
+    const facts = describeMemory(c.memory).map((f) => f.replace(/^Their /, "Your ").replace(/\bthey\b/g, "you").replace(/\bThey\b/g, "You").replace(/\btheir\b/g, "your"));
+    return T("memory", facts.length
+      ? ["Here's what I've picked up so far.", facts.slice(0, 4).join(" "), "Say forget everything any time and I'll wipe it."]
+      : ["Not much yet. Tell me about yourself: your name, the people you miss, what helps on a hard day. I'll remember it."]);
+  }
+
+  /* ---- knowledge: questions about space health, from NASA's pages ---- */
+  const k = knowledge(t);
+  if (k) return k;
+
   /* ---- small talk ---- */
   if (/how are you|how'?re you|how'?s it going|how are things|how do you feel|you okay\b|what'?s up|how have you been/.test(t)) {
     return T("how-are-you", ["All systems nominal, thanks for asking. More importantly, how are you?"], [], { kind: "how-are-you" }, { expect: "open" });
@@ -843,7 +988,8 @@ export function respond(text: string, c: BrainContext): Turn {
   }
   if (/^(hey|hi|hello|good (morning|evening|afternoon)|yo|howdy|hiya|morning)\b/.test(t) && t.split(" ").length < 6) {
     const top = topCondition(c);
-    return T("greeting", [top && top.id !== "short-sleep" ? `Hi! I'm here. One thing on my list: ${top.title.toLowerCase()}. How are you feeling?` : "Hi! Everything looks good on my side. How are you feeling?"],
+    const hi = c.memory?.name ? `Hi ${c.memory.name}!` : "Hi!";
+    return T("greeting", [top && top.id !== "short-sleep" ? `${hi} I'm here. One thing on my list: ${top.title.toLowerCase()}. How are you feeling?` : `${hi} Everything looks good on my side. How are you feeling?`],
       [], { kind: "how-are-you" }, { expect: "open" });
   }
   if (/\b(yes|yeah|no|nope|okay|ok)\b/.test(t) && t.split(" ").length <= 2) {
@@ -860,7 +1006,7 @@ export function respond(text: string, c: BrainContext): Turn {
       : T("open-end", ["Okay. Whenever you're ready, I'm here. Just say Hey Cosmo."], [], null, { sleep: true });
   }
   if (c.lastIntent === "unknown") {
-    return T("unknown", ["Still not sure what you mean. Try: how's my oxygen, I feel stressed, or tell me a joke."], [], null, { expect: "open" });
+    return T("unknown", ["Still not sure what you mean. Try: how's my oxygen, I feel stressed, or tell me a joke."], [], null, { expect: "open", agent: true });
   }
-  return T("unknown", ["I'm not sure I got that. You can tell me how you feel, ask about your readings, or ask for a joke."], [], null, { expect: "open" });
+  return T("unknown", ["I'm not sure I got that. You can tell me how you feel, ask about your readings, or ask for a joke."], [], null, { expect: "open", agent: true });
 }

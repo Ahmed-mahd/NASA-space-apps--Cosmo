@@ -89,7 +89,8 @@ export function initVoice() {
   if (debugOn()) {
     // test hook: feed words as if the recognizer heard them (the real mic path is identical after this point)
     (window as unknown as { __cosmoVoice: unknown }).__cosmoVoice = {
-      hear: (text: string) => { heardText(text, false); heardText(text, true); },
+      hear: (text: string) => { onSegment(text, false); onSegment(text, true); },
+      say: simulateSpeech,
       state: () => state,
     };
   }
@@ -98,16 +99,19 @@ export function initVoice() {
 let speakLevel = 0;
 let levelTimer: number | undefined;
 let speakingCount = 0;
+/** Cosmo's recent lines, so the recognizer can tell Cosmo's own voice from the astronaut's. */
+const spoken: string[] = [];
+let lastSpokeEnd = 0;
 
 /** Speak a line as one of the speakers. Resolves when finished (or skipped). */
 export function speak(text: string, who: Speaker = "cosmo"): Promise<void> {
   return new Promise((resolve) => {
     set({ caption: { who, text }, thinking: false, listening: false });
     speakingCount++;
-    pauseRecognition();
+    if (who === "cosmo") { spoken.push(text.toLowerCase()); if (spoken.length > 4) spoken.shift(); }
     const end = () => {
       speakingCount = Math.max(0, speakingCount - 1);
-      if (!speakingCount) resumeRecognitionSoon();
+      if (!speakingCount) lastSpokeEnd = performance.now();
       resolve();
     };
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
@@ -151,6 +155,37 @@ export function stopSpeaking() {
 }
 
 export const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Test helper (development): the astronaut "says" a line through the same path as the
+ * microphone. Words arrive one by one at speaking pace, and a pause longer than
+ * 0.7 s ends Chrome's piece the way the real recognizer does. `pauses` maps a word
+ * index to a pause in ms after that word. With `voice`, the line is also spoken aloud.
+ */
+async function simulateSpeech(text: string, opts: { pauses?: Record<number, number>; voice?: boolean; wpm?: number } = {}) {
+  if (opts.voice && "speechSynthesis" in window) {
+    const u = new SpeechSynthesisUtterance(text);
+    const v = pick("astronaut");
+    if (v) u.voice = v;
+    u.pitch = PROFILE.astronaut.pitch;
+    window.speechSynthesis.speak(u);
+  }
+  const list = text.split(/\s+/).filter(Boolean);
+  const per = 60000 / (opts.wpm ?? 165);
+  let seg = "";
+  for (let i = 0; i < list.length; i++) {
+    seg = `${seg} ${list[i]}`.trim();
+    onSegment(seg, false);
+    await wait(per);
+    const pause = opts.pauses?.[i];
+    if (pause) {
+      await wait(Math.min(pause, 700));
+      if (pause >= 700) { onSegment(seg, true); seg = ""; }
+      await wait(Math.max(0, pause - 700));
+    }
+  }
+  if (seg) { await wait(700); onSegment(seg, true); }
+}
 
 /* ---------------- microphone level (for the orb) ---------------- */
 let micStream: MediaStream | null = null;
@@ -305,6 +340,7 @@ export function followUp(ms = 8000) {
 
 function dispatch(text: string) {
   log("command:", JSON.stringify(text), capture ? "(answer for an activity)" : "");
+  lastDispatchAt = performance.now();
   if (typeof window !== "undefined") window.clearTimeout(awakeTimer);
   set({ listening: false, caption: { who: "astronaut", text } });
   if (capture) { const c = capture; capture = null; c(text); return; }
@@ -342,43 +378,104 @@ function claimMic() {
   if (!rec) resumeRecognitionSoon();
 }
 
-/* ---- one spoken sentence (a "segment" of recognizer results) ---- */
-let segWords = "";
-let segCommitted = false;
-let commitTimer: number | undefined;
-function resetSegment() {
+/* ---- turn-taking: one "turn" is everything the astronaut says before a real pause ---- */
+let turnDone = ""; // finished pieces of this turn
+let segWords = ""; // the piece being spoken now
+let endTimer: number | undefined;
+let muted = false;
+let expecting: "yesno" | "number" | "reading" | "open" | undefined;
+let patience = 0;
+let interruptSeq = 0;
+let lastDispatchAt = 0;
+let onBargeIn: ((info: { msSinceAnswerStarted: number }) => void) | null = null;
+
+function resetTurn() {
+  turnDone = "";
   segWords = "";
-  segCommitted = false;
-  if (typeof window !== "undefined") window.clearTimeout(commitTimer);
+  if (typeof window !== "undefined") window.clearTimeout(endTimer);
+}
+const words = (s: string) => s.toLowerCase().match(/[a-z0-9']+/g) ?? [];
+
+/** Is this Cosmo's own voice coming back through the mic? */
+function isEcho(heard: string) {
+  const hw = words(heard);
+  if (!hw.length) return true;
+  const pool = new Set(words(spoken.join(" ")));
+  return hw.filter((w) => pool.has(w)).length / hw.length >= 0.6;
 }
 
-/** Words from the recognizer (partial or complete). Wakes Cosmo, shows captions, sends finished sentences. */
-function heardText(text: string, final: boolean) {
-  const w = parseWake(text);
+/** The astronaut talks over Cosmo: stop talking and listen. */
+function bargeIn() {
+  log("astronaut talked over Cosmo: stopping to listen");
+  interruptSeq++;
+  const since = performance.now() - lastDispatchAt;
+  stopSpeaking();
+  onBargeIn?.({ msSinceAnswerStarted: since });
+  if (wakeOn) wakeUp({ chime: false, ms: 10000 });
+}
+
+/** How long a pause means "I'm done talking". Longer when the sentence sounds unfinished. */
+function endDelay(text: string, final: boolean) {
+  const t = text.trim().toLowerCase();
+  const unfinished = /(,|\b(and|but|so|because|cause|or|then|i|i'm|i was|was|were|is|the|a|an|to|of|with|my|um|uh|er|like|just|that|if|when|which|about|for|from|actually|well))\s*$/.test(t);
+  const bareYesNo = /^(yes|yeah|yep|no|nope|nah|not really|not yet|okay|ok)[.!]?$/.test(t);
+  return (final ? 900 : 1700) + patience + (unfinished ? 1600 : 0) + (bareYesNo && expecting !== "yesno" ? 0 : bareYesNo ? 600 : 0);
+}
+
+function endTurn() {
+  const full = `${turnDone} ${segWords}`.trim();
+  resetTurn();
+  const w = parseWake(full);
+  const said = (w.woke ? w.command : full).trim();
+  if (said) dispatch(said);
+}
+
+/** One update from the recognizer (or the simulator): part of the current piece, or the finished piece. */
+function onSegment(text: string, final: boolean) {
+  if (muted) return;
+  const piece = text.trim();
+  // Cosmo is (or was just) talking: its own voice is ignored, the astronaut's voice interrupts it
+  const echoWindow = speakingCount > 0 || performance.now() - lastSpokeEnd < 1200;
+  if (echoWindow && piece && isEcho(piece)) { log("ignored Cosmo's own voice:", JSON.stringify(piece)); return; }
+  if (speakingCount > 0) {
+    if (state.speaking !== "cosmo") return; // demo voices
+    if (!piece || (words(piece).length < 2 && !/^(stop|wait|cosmo|hold on|hang on|sorry|no|excuse me)\b/.test(piece.toLowerCase()))) return;
+    bargeIn();
+  }
+  const full = `${turnDone} ${piece}`.trim();
   if (state.wake !== "awake" && !capture) {
-    if (!w.woke) return;
+    if (!parseWake(full).woke) { if (final) turnDone = ""; return; }
     if (state.overheard) set({ overheard: null });
     wakeUp();
-    set({ caption: { who: "astronaut", text: w.command, interim: !final } });
-    if (final && w.command) dispatch(w.command);
-    return;
   }
-  // awake (or capturing an answer): every word counts, a repeated wake phrase is dropped
-  const cmd = (w.woke ? w.command : text).trim();
-  set({ listening: true, caption: { who: "astronaut", text: cmd, interim: !final } });
-  armSleep(Math.max(awakeMs, 5000));
-  if (final && cmd) dispatch(cmd);
+  const w = parseWake(full);
+  set({ listening: true, caption: { who: "astronaut", text: (w.woke ? w.command : full).trim(), interim: !final } });
+  armSleep(Math.max(awakeMs, 6000));
+  if (final) { turnDone = full; segWords = ""; } else segWords = piece;
+  if (typeof window !== "undefined") {
+    window.clearTimeout(endTimer);
+    endTimer = window.setTimeout(endTurn, endDelay(full, final));
+  }
 }
+
+/** The conversation tells the voice layer what kind of answer it expects (a bare "no" may be followed by an explanation). */
+export function setExpecting(e: typeof expecting) { expecting = e; }
+/** Extra wait before answering, learned from this astronaut (memory.patience). */
+export function setPatience(ms: number) { patience = Math.max(0, Math.min(2000, ms)); }
+/** Ignore the microphone (demo conversations play their own voices). */
+export function setMuted(m: boolean) { muted = m; if (m) resetTurn(); }
+export function setBargeInHandler(fn: typeof onBargeIn) { onBargeIn = fn; }
+/** Changes every time the astronaut interrupts Cosmo; the conversation stops its current answer. */
+export const getInterruptSeq = () => interruptSeq;
 
 function startRecognition() {
   const Ctor = Rec();
-  if (!Ctor || !wakeOn || speakingCount || rec || yielded) return;
+  if (!Ctor || !wakeOn || rec || yielded) return;
   if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
   lastStart = performance.now();
   const r = new Ctor();
   rec = r;
   segStart = 0;
-  resetSegment();
   r.lang = "en-US";
   r.interimResults = true;
   r.continuous = true;
@@ -403,29 +500,11 @@ function startRecognition() {
       if (text.trim() && debugOn()) set({ overheard: text.trim() });
     }
     const final = res.length > 0 && res[res.length - 1].isFinal;
-    log(final ? "heard (final):" : "heard:", JSON.stringify(text), "| state:", state.wake, speakingCount ? "(speaking, ignored)" : "");
-    const len = res.length;
-    if (speakingCount) { if (final) { segStart = len; resetSegment(); } return; }
-    if (final) {
-      segStart = len;
-      // Chrome sometimes finalizes with an empty transcript: keep the words it already showed
-      const said = text.trim() || segWords;
-      const done = segCommitted;
-      resetSegment();
-      if (!done && said) heardText(said, true);
-      return;
-    }
-    if (segCommitted) return;
-    if (text.trim()) segWords = text.trim();
-    heardText(text, false);
-    // end of sentence after a short silence, without waiting for Chrome's final result
-    window.clearTimeout(commitTimer);
-    commitTimer = window.setTimeout(() => {
-      if (!segWords || segCommitted) return;
-      log("silence, taking:", JSON.stringify(segWords));
-      segCommitted = true;
-      heardText(segWords, true);
-    }, 1200);
+    log(final ? "heard (final):" : "heard:", JSON.stringify(text), "| state:", state.wake, speakingCount ? "(Cosmo speaking)" : "");
+    if (final) segStart = res.length;
+    // Chrome sometimes finalizes with an empty transcript: keep the words it already showed
+    const said = final ? (text.trim() || segWords) : text;
+    if (said.trim() || final) onSegment(said, final);
   };
   r.onerror = (e) => {
     log("recognizer error:", e.error);
@@ -445,9 +524,9 @@ function startRecognition() {
     }
   };
   r.onend = () => {
-    log("recognizer ended; restarting:", wakeOn && !speakingCount);
+    log("recognizer ended; restarting:", wakeOn);
     rec = null;
-    if (wakeOn && !speakingCount) {
+    if (wakeOn) {
       window.clearTimeout(restartTimer);
       restartTimer = window.setTimeout(startRecognition, backoff);
     }
@@ -466,7 +545,7 @@ function pauseRecognition() {
   if (typeof window !== "undefined") window.clearTimeout(restartTimer);
   const r = rec;
   rec = null;
-  resetSegment();
+  resetTurn();
   if (r) { r.onend = null; r.onresult = null; r.onerror = null; try { r.abort(); } catch { /* already stopped */ } }
 }
 function resumeRecognitionSoon() {

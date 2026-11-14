@@ -33,6 +33,9 @@ export interface YesNoCheck {
   /** What happens next. Without it Cosmo moves to the next question. */
   thenYes?: Then;
   thenNo?: Then;
+  /** Words that answer the question without saying yes or no ("I was just sitting" = not exercising). */
+  yesCues?: RegExp;
+  noCues?: RegExp;
 }
 export type Then = "recheck" | "scan-self" | "talk" | "crewmate" | "stop";
 
@@ -66,20 +69,20 @@ export interface Condition {
 /** Yes-or-no questions per condition, for when the astronaut is alone (example protocol). */
 export const ALONE_CHECKS: Record<string, YesNoCheck[]> = {
   "low-oxygen": [
-    { q: "Have you stopped moving, and are you holding still?", yes: "Good.", no: "Please stop now and hold on to something steady.", log: "Stopped exertion", repeatOn: "no" },
-    { q: "Are you feeling dizzy or confused?", yes: "Thank you. That's important. Stay still, I'm right here.", no: "Good.", log: "Dizzy or confused" },
-    { q: "Have you started the vehicle's emergency oxygen procedure?", yes: "Well done.", no: "Start it now. I'll wait.", log: "Emergency oxygen procedure started", repeatOn: "no" },
-    { q: "Is your breathing getting easier?", yes: "That's what I want to hear. Let me recheck your oxygen.", no: "Okay. I've told the flight surgeon it isn't improving yet. Keep following the procedure while I recheck.", log: "Breathing easier", thenYes: "recheck", thenNo: "recheck" },
+    { q: "Have you stopped moving, and are you holding still?", yes: "Good.", no: "Please stop now and hold on to something steady.", log: "Stopped exertion", repeatOn: "no", yesCues: /stopped|holding (still|on)|still now|sitting|anchored|strapped/, noCues: /still moving|can'?t stop|not yet/ },
+    { q: "Are you feeling dizzy or confused?", yes: "Thank you. That's important. Stay still, I'm right here.", no: "Good.", log: "Dizzy or confused", yesCues: /dizz|confus|spinning|light.?headed|foggy|woozy/, noCues: /not (dizzy|confused)|clear.?headed|head is clear/ },
+    { q: "Have you started the vehicle's emergency oxygen procedure?", yes: "Well done.", no: "Start it now. I'll wait.", log: "Emergency oxygen procedure started", repeatOn: "no", yesCues: /started|running|it'?s on|turned it on|done|going/, noCues: /not yet|haven'?t|can'?t find|where is/ },
+    { q: "Is your breathing getting easier?", yes: "That's what I want to hear. Let me recheck your oxygen.", no: "Okay. I've told the flight surgeon it isn't improving yet. Keep following the procedure while I recheck.", log: "Breathing easier", thenYes: "recheck", thenNo: "recheck", yesCues: /easier|better|improv|calmer/, noCues: /worse|harder|the same|not (easier|better)/ },
   ],
   "fast-heart": [
-    { q: "Do you have any chest pain or pressure?", yes: "Thank you. Stay still. I'm flagging this to the flight surgeon as urgent.", no: "Good.", log: "Chest pain or pressure" },
-    { q: "Do you feel dizzy or faint?", yes: "Okay. Anchor yourself and keep still.", no: "Good.", log: "Dizzy or faint" },
-    { q: "Were you exercising in the last few minutes?", yes: "That could explain part of it. Rest now and I'll recheck.", no: "Okay. Rest now, and I'll recheck in a few minutes.", log: "Recent exercise", thenYes: "stop", thenNo: "stop" },
+    { q: "Do you have any chest pain or pressure?", yes: "Thank you. Stay still. I'm flagging this to the flight surgeon as urgent.", no: "Good.", log: "Chest pain or pressure", yesCues: /hurts|tight|pressure|pain/, noCues: /no pain|not (painful|tight)|chest is fine/ },
+    { q: "Do you feel dizzy or faint?", yes: "Okay. Anchor yourself and keep still.", no: "Good.", log: "Dizzy or faint", yesCues: /dizz|faint|light.?headed|woozy/, noCues: /not (dizzy|faint)/ },
+    { q: "Were you exercising in the last few minutes?", yes: "That could explain part of it. Rest now and I'll recheck.", no: "Okay. Rest now, and I'll recheck in a few minutes.", log: "Recent exercise", thenYes: "stop", thenNo: "stop", yesCues: /exercis|work(ing|ed)? ?out|running|ran\b|treadmill|bike|cycling|lifting|training|ergometer/, noCues: /sitting|sat\b|resting|at my desk|desk|reading|lying|sleeping|relaxing|computer|finishing|working on|just work|nothing/ },
   ],
   "flank-pain": [
     { q: "Are you in a stable position, anchored or strapped in?", yes: "Good.", no: "Take a moment to anchor yourself. I'll wait.", log: "In a stable position", repeatOn: "no" },
-    { q: "Is the pain getting worse?", yes: "Thank you. I've marked it as getting worse for the flight surgeon.", no: "Okay. Good to know.", log: "Pain getting worse" },
-    { q: "Do you feel sick, or have you vomited?", yes: "Noted. Sip water slowly if mission rules allow.", no: "Good.", log: "Nausea or vomiting" },
+    { q: "Is the pain getting worse?", yes: "Thank you. I've marked it as getting worse for the flight surgeon.", no: "Okay. Good to know.", log: "Pain getting worse", yesCues: /worse|more|increasing|stronger/, noCues: /the same|same as|better|easing|less/ },
+    { q: "Do you feel sick, or have you vomited?", yes: "Noted. Sip water slowly if mission rules allow.", no: "Good.", log: "Nausea or vomiting", yesCues: /sick|vomit|threw up|throwing up|nause|queasy/, noCues: /not sick|stomach is fine/ },
     { q: "Can you hold the ultrasound probe yourself if I guide you?", yes: "Great. We'll do it together.", no: "That's fine. I've sent everything to the flight surgeon, and I'm staying with you.", log: "Able to self-scan", thenYes: "scan-self", thenNo: "stop" },
   ],
   "chest-pain": [
@@ -89,12 +92,30 @@ export const ALONE_CHECKS: Record<string, YesNoCheck[]> = {
     { q: "Are you sweating, or do you feel sick?", yes: "Noted. The flight surgeon has all of this now.", no: "Good. The flight surgeon has all of this now.", log: "Sweating or nausea", thenYes: "stop", thenNo: "stop" },
   ],
   "crisis": [
-    { q: "Are you safe right now?", yes: "Thank you. Let's keep it that way, together.", no: "Okay. Please move away from anything you could hurt yourself with, and stay where the crew can reach you. I'm alerting them now.", log: "Safe right now" },
+    { q: "Are you safe right now?", yes: "Thank you. Let's keep it that way, together.", no: "Okay. Please move away from anything you could hurt yourself with, and stay where the crew can reach you. I'm alerting them now.", log: "Safe right now", yesCues: /\bsafe\b|okay|alright/, noCues: /not safe|unsafe|don'?t feel safe/ },
     { q: "Is a crewmate nearby?", yes: "Please ask them to stay with you. I'll only tell them you'd like company.", no: "Okay. Then I'm staying right here with you.", log: "Crewmate nearby", thenYes: "crewmate" },
     { q: "Would you like to talk about what's going on while we wait for the call?", yes: "I'm listening. Take your time. What's been going on?", no: "That's okay. We can just stay here together. I'll tell you as soon as the call is ready.", log: "Wants to talk", thenYes: "talk", thenNo: "stop" },
   ],
 };
 ALONE_CHECKS["faint"] = ALONE_CHECKS["fast-heart"];
+
+/**
+ * R-GLU-01: a finger-stick glucose reading the astronaut reads out (example protocol, needs medical review).
+ * Ranges are widely published adult reference values in mg/dL. No medicine or dose is ever named.
+ */
+export function glucoseRule(n: number): { severity: "ok" | "minor" | "major"; say: string[]; log: string } {
+  if (n < 54) return { severity: "major", log: `Glucose ${n} mg/dL, very low.`, say: [
+    `${n} is very low. Sit down and have a sweet drink or a snack from the galley right now.`,
+    "I'm flagging this to the flight surgeon, and I'll ask you to check again in fifteen minutes. Tell me straight away if you feel shaky, sweaty or confused."] };
+  if (n < 70) return { severity: "minor", log: `Glucose ${n} mg/dL, below range.`, say: [
+    `${n} is a bit below the usual range. Have a sweet drink or a snack from the galley, and sit down for a few minutes.`,
+    "I'll ask you to check again in fifteen minutes. If you feel shaky, sweaty or confused, tell me straight away."] };
+  if (n <= 140) return { severity: "ok", log: `Glucose ${n} mg/dL, in range.`, say: [`${n}. That's right in the normal range. Nicely done.`] };
+  if (n <= 250) return { severity: "minor", log: `Glucose ${n} mg/dL, above range.`, say: [
+    `${n} is higher than usual. That can happen after a meal.`, "Drink some water, and let's check again in two hours. I've logged it for the flight surgeon."] };
+  return { severity: "major", log: `Glucose ${n} mg/dL, very high.`, say: [
+    `${n} is high. I'm flagging it to the flight surgeon now.`, "Drink some water, and tell me if you feel very thirsty, sick or unusually tired."] };
+}
 
 export const PROTOCOL_VERSION = "cosmo-protocols v0.2 (draft)";
 export const PROTOCOL_LABEL = "Example protocol, needs medical review";

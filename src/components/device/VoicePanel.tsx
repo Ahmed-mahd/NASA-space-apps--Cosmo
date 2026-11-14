@@ -38,7 +38,7 @@ export default function VoicePanel({ engine, busy, demo, expect, transcript, ale
     : v.wake === "starting" ? "Starting the microphone…"
     : v.supported.stt ? "Voice is off. Tap the orb or turn on Hey Cosmo" : "Voice input needs Chrome. The presenter panel (Shift+P) has a typed backup";
   const cap = v.caption;
-  const asking = !demo && !v.speaking && (expect === "yesno" || expect === "number");
+  const asking = !demo && !v.speaking && (expect === "yesno" || expect === "number" || expect === "reading");
 
   return (
     <div className="dev-panel relative flex min-h-[84px] flex-col justify-center gap-1 p-3 pr-3" style={{ borderColor: alert ? "var(--crit)" : undefined }}>
@@ -81,7 +81,7 @@ export default function VoicePanel({ engine, busy, demo, expect, transcript, ale
 
       {asking && (
         <div className="flex items-center gap-2">
-          <span className="text-[11px] text-ink/60">{expect === "yesno" ? "Just say yes or no" : "Say a number from 1 to 10"}</span>
+          <span className="text-[11px] text-ink/60">{expect === "yesno" ? "Answer yes or no, or tell me more" : expect === "reading" ? "Read me the number on the meter" : "Say a number from 1 to 10"}</span>
           {expect === "yesno" && (
             <>
               <button type="button" onClick={() => onAnswer("yes")} className="rounded-full bg-ok/90 px-4 py-1 text-xs font-semibold text-void">Yes</button>
