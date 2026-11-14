@@ -2,6 +2,7 @@
  * Cosmo's language-model agent (server side).
  *
  * Any OpenAI-compatible chat endpoint works. Set in Vercel (never in the repo), one of:
+ *   OPENROUTER_API_KEY                  OpenRouter (tried first; picks a fast model it offers)
  *   GEMINI_API_KEY                      Google Gemini (its OpenAI-compatible endpoint is used)
  *   GROQ_API_KEY                        Groq
  *   COSMO_MODEL_BASE_URL + COSMO_MODEL_API_KEY   anything else, e.g. http://localhost:11434/v1 for Ollama + Qwen
@@ -73,10 +74,16 @@ Return only JSON: {"lines": ["..."], "follow": true or false, "asks": "open", "a
 /* ---------- providers ---------- */
 const GOOGLE = "https://generativelanguage.googleapis.com/v1beta/openai";
 const GROQ = "https://api.groq.com/openai/v1";
-interface Provider { base: string; key: string; google: boolean }
+const OPENROUTER = "https://openrouter.ai/api/v1";
+interface Provider { base: string; key: string; google: boolean; openrouter: boolean }
+/** OpenRouter: fast, reliable chat models tried in this order (each is used only if OpenRouter lists it). */
+const OPENROUTER_MODELS = [
+  "google/gemini-2.5-flash", "openai/gpt-4o-mini", "meta-llama/llama-3.3-70b-instruct", "google/gemini-2.0-flash-001",
+  "anthropic/claude-3.5-haiku", "mistralai/mistral-small-3.1-24b-instruct", "qwen/qwen-2.5-72b-instruct",
+];
 
 /** A model id looks like "llama-3.3-70b-versatile"; a key pasted into the wrong variable is recognised and never shown. */
-const looksLikeKey = (s: string) => /^(gsk_|sk-|AIza|AQ\.)|^[A-Za-z0-9_-]{36,}$/.test(s);
+const looksLikeKey = (s: string) => /^(gsk_|sk-|sk-or-|AIza|AQ\.)|^[A-Za-z0-9_-]{36,}$/.test(s);
 
 /**
  * Every provider/key combination the environment allows, best guess first. Cosmo tries them in
@@ -90,20 +97,24 @@ function providers(): Provider[] {
   const add = (base: string | undefined, key: string | undefined) => {
     if (!base || !key) return;
     const b = base.replace(/\/$/, "");
-    if (!out.some((p) => p.base === b && p.key === key)) out.push({ base: b, key, google: /googleapis\.com/.test(b) });
+    if (!out.some((p) => p.base === b && p.key === key)) out.push({ base: b, key, google: /googleapis\.com/.test(b), openrouter: /openrouter\.ai/.test(b) });
   };
   const explicit = val("COSMO_MODEL_BASE_URL");
   const own = val("COSMO_MODEL_API_KEY"), gemini = val("GEMINI_API_KEY") ?? val("GOOGLE_API_KEY"), groq = val("GROQ_API_KEY");
+  const openrouter = val("OPENROUTER_API_KEY");
   const name = val("COSMO_MODEL_NAME");
   const stray = name && looksLikeKey(name) ? name : undefined; // a key pasted into the model-name field
+  // OpenRouter first: one key, many models, its own failover between providers
+  add(OPENROUTER, openrouter);
   if (explicit) {
-    const g = /googleapis\.com/.test(explicit), q = /groq\.com/.test(explicit);
-    for (const k of g ? [gemini, own, stray] : q ? [groq, own, stray] : [own ?? "none"]) add(explicit, k);
+    const g = /googleapis\.com/.test(explicit), q = /groq\.com/.test(explicit), o = /openrouter\.ai/.test(explicit);
+    for (const k of g ? [gemini, own, stray] : q ? [groq, own, stray] : o ? [openrouter, own, stray] : [own ?? "none"]) add(explicit, k);
   }
   add(GOOGLE, gemini);
   add(GROQ, groq);
   // keys recognised by their shape, whatever variable they were put in
-  for (const k of [own, stray, gemini, groq]) {
+  for (const k of [own, stray, gemini, groq, openrouter]) {
+    if (k && /^sk-or-/.test(k)) add(OPENROUTER, k);
     if (k && /^AIza|^AQ\./.test(k)) add(GOOGLE, k);
     if (k && /^gsk_/.test(k)) add(GROQ, k);
   }
@@ -149,9 +160,16 @@ const isBad = (m: string) => (health.get(m)?.badUntil ?? 0) > Date.now();
  */
 async function candidates(p: Provider, prefer?: string): Promise<string[]> {
   const env = process.env.COSMO_MODEL_NAME?.trim();
-  const fits = env && !looksLikeKey(env) && (p.google ? /gemini|gemma/i.test(env) : /groq\.com/.test(p.base) ? !/gemini|gemma/i.test(env) : true);
+  const fits = env && !looksLikeKey(env) && (p.openrouter ? env.includes("/") : p.google ? /gemini|gemma/i.test(env) : /groq\.com/.test(p.base) ? !/gemini|gemma|\//i.test(env) : true);
   const { ids } = await listModels(p);
   const ranked: string[] = [];
+  if (p.openrouter) {
+    // OpenRouter lists hundreds of models: use the curated fast ones it actually offers
+    const offered = ids.length ? OPENROUTER_MODELS.filter((m) => ids.includes(m)) : OPENROUTER_MODELS;
+    const list = [...new Set([...(fits ? [env!] : []), ...offered])];
+    const score = (m: string, i: number) => (isBad(m) ? 1e6 : 0) + (health.get(m)?.ms ?? (m === prefer ? 1000 : 2000 + i * 100));
+    return list.map((m, i) => ({ m, s: score(m, i) })).sort((x, y) => x.s - y.s).map((x) => x.m);
+  }
   for (const re of PREFERRED) for (const id of ids) if (re.test(id) && !ranked.includes(id) && !/pro\b|preview|exp/i.test(id)) ranked.push(id);
   // providers with other model names (a local Ollama, for example): use whatever they list
   for (const id of ids) if (!ranked.includes(id) && !/pro|preview|exp/i.test(id)) ranked.push(id);
@@ -185,7 +203,7 @@ let engineCache: { at: number; value: { engine: string; error?: string } } | nul
 async function reachable(): Promise<{ engine: string; error?: string }> {
   if (engineCache && Date.now() - engineCache.at < 60_000) return engineCache.value;
   const all = providers();
-  let value: { engine: string; error?: string } = { engine: "on-board scripted", error: all.length ? undefined : "no API key found: set GEMINI_API_KEY or GROQ_API_KEY in Vercel" };
+  let value: { engine: string; error?: string } = { engine: "on-board scripted", error: all.length ? undefined : "no API key found: set OPENROUTER_API_KEY (or GEMINI_API_KEY / GROQ_API_KEY) in Vercel" };
   const fails: string[] = [];
   for (const p of [...all.slice(good), ...all.slice(0, good)]) {
     const { status } = await listModels(p);
@@ -207,7 +225,7 @@ async function callModel(p: Provider, model: string, system: string, user: strin
   try {
     res = await fetch(`${p.base}/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.key}` },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.key}`, ...(p.openrouter ? { "HTTP-Referer": "https://cosmo-health.vercel.app", "X-Title": "COSMO" } : {}) },
       body: JSON.stringify({
         model,
         temperature: opts.chat ? 0.8 : 0.4,
@@ -311,7 +329,7 @@ export async function POST(req: Request) {
   const mode = body.mode ?? "reword";
   const fallback = { lines: body.draft, actions: [], remember: [], follow: true, engine: "on-board scripted" };
   const all = providers();
-  if (!all.length) return Response.json({ ...fallback, error: "no API key found: set GEMINI_API_KEY or GROQ_API_KEY in Vercel" });
+  if (!all.length) return Response.json({ ...fallback, error: "no API key found: set OPENROUTER_API_KEY (or GEMINI_API_KEY / GROQ_API_KEY) in Vercel" });
 
   const context = [
     `STATUS: ${body.status}${body.clock ? `   STATION TIME: ${body.clock}` : ""}`,
