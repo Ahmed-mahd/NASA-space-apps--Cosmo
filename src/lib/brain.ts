@@ -805,6 +805,54 @@ function handlePending(t: string, raw: string, c: BrainContext): Turn | null {
   return null;
 }
 
+/* ================= open conversation without the language model ================= */
+
+const SWAP: Record<string, string> = {
+  i: "you", me: "you", my: "your", mine: "yours", myself: "yourself", am: "are", "i'm": "you're", "i've": "you've", "i'll": "you'll", "i'd": "you'd",
+  we: "you", our: "your", us: "you", was: "were",
+};
+/** "I miss my dog" -> "you miss your dog". */
+export function reflect(raw: string) {
+  return raw.trim().replace(/[.!?]+$/, "").split(/\s+/).map((w, i) => {
+    const k = w.toLowerCase().replace(/[,;]$/, "");
+    if (k === "was" && i === 0) return w;
+    const tail = /[,;]$/.exec(w)?.[0] ?? "";
+    return SWAP[k] ? SWAP[k] + tail : i === 0 ? w.charAt(0).toLowerCase() + w.slice(1) : w;
+  }).join(" ").replace(/\byou are\b/g, "you're");
+}
+
+/**
+ * Anything the scripts do not cover. With a language model this reply is only a
+ * suggestion and the model answers for real. Without one (offline, on board),
+ * Cosmo stays in the conversation: it listens and asks, and is honest that
+ * looking things up needs its language model.
+ */
+function openTalk(raw: string, c: BrainContext): Turn {
+  const t = raw.trim();
+  const n = (c.jokeIndex + (c.factIndex ?? 0) + t.length) % 3;
+  const again = c.lastIntent === "unknown";
+  const isQuestion = /\?$/.test(t) || /^(who|what|when|where|why|how|which|is|are|was|were|do|does|did|can|could|would|will|should|tell me|explain|describe)\b/i.test(t);
+  const short = t.split(/\s+/).length <= 2;
+  let say: string[];
+  if (isQuestion) {
+    say = again
+      ? ["I'd love to get into that properly. I'm on my on-board brain at the moment, without my language model, so I can't look it up.", "What made you think of it?"]
+      : [[
+          "Good question. Right now I'm running on board, without my language model, so I can't give you a proper answer to that one.",
+          "I like that question. I'm on my on-board brain right now, so I can't look it up for you.",
+          "That's a good one. My language model isn't reachable right now, so I can't answer it properly.",
+        ][n], "Tell me what you think, though. I'm curious."];
+  } else if (short) {
+    say = [["Go on, I'm listening.", "Tell me more.", "I'm here. Say a bit more?"][n]];
+  } else {
+    const r = reflect(t);
+    say = again
+      ? [[`Okay, ${r}.`, `Right, ${r}.`, `Mm, ${r}.`][n], ["What happened next?", "How do you feel about that?", "And what do you make of it?"][n]]
+      : [[`So ${r}.`, `I hear you: ${r}.`, `${r.charAt(0).toUpperCase()}${r.slice(1)}. Got it.`][n], ["Tell me more about that.", "What's that been like for you?", "What's on your mind about it?"][n]];
+  }
+  return T("unknown", say, [], null, { expect: "open", agent: true });
+}
+
 /* ================= main entry ================= */
 
 export function respond(text: string, c: BrainContext): Turn {
@@ -1011,8 +1059,5 @@ export function respond(text: string, c: BrainContext): Turn {
       ? T("open-unclear", ["Take your time. Is something hurting, or is it more about how you're feeling inside?"], [], { kind: "open", tries: c.pending.tries + 1 }, { expect: "open" })
       : T("open-end", ["Okay. Whenever you're ready, I'm here. Just say Hey Cosmo."], [], null, { sleep: true });
   }
-  if (c.lastIntent === "unknown") {
-    return T("unknown", ["Still not sure what you mean. Try: how's my oxygen, I feel stressed, or tell me a joke."], [], null, { expect: "open", agent: true });
-  }
-  return T("unknown", ["I'm not sure I got that. You can tell me how you feel, ask about your readings, or ask for a joke."], [], null, { expect: "open", agent: true });
+  return openTalk(raw, c);
 }

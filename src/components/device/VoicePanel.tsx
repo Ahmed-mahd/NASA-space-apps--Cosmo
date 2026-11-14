@@ -13,6 +13,8 @@ const WHO: Record<Speaker, { label: string; color: string }> = {
 
 interface Props {
   engine: string;
+  /** Why the language model is not answering, if it is not. */
+  aiNote: string | null;
   busy: boolean;
   demo: string | null;
   expect: Turn["expect"];
@@ -28,7 +30,7 @@ interface Props {
 }
 
 /** The conversation text box: what Cosmo is doing, live captions, answer hints and the transcript. */
-export default function VoicePanel({ engine, busy, demo, expect, transcript, alert, onDemo, onCancelDemo, onAnswer, remembers, onForget }: Props) {
+export default function VoicePanel({ engine, aiNote, busy, demo, expect, transcript, alert, onDemo, onCancelDemo, onAnswer, remembers, onForget }: Props) {
   const v = useVoice();
   const [log, setLog] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -49,6 +51,10 @@ export default function VoicePanel({ engine, busy, demo, expect, transcript, ale
         <span className="h-1.5 w-1.5 flex-none rounded-full" style={{ background: v.wake === "off" ? "var(--ink)" : v.listening || v.wake === "awake" ? "var(--ok)" : "var(--holo)", opacity: v.wake === "off" ? 0.3 : 1 }} />
         <p className="min-w-0 flex-1 basis-[60%] truncate text-[11px] tracking-wide text-ink/60 sm:basis-0">{status}</p>
         <div className="flex flex-wrap items-center gap-1.5">
+          <span className={`rounded-full border px-2.5 py-1 text-[11px] ${aiNote || engine === "on-board scripted" ? "border-alert/50 text-alert" : "border-ok/50 text-ok"}`}
+            title={aiNote ?? (engine === "on-board scripted" ? "No language model configured" : `Language model: ${engine}`)}>
+            {aiNote || engine === "on-board scripted" ? "AI offline" : "AI on"}
+          </span>
           <button type="button" onClick={() => (v.wake === "off" ? enableWake() : disableWake())} disabled={!v.supported.stt}
             className={`rounded-full border px-2.5 py-1 text-[11px] disabled:opacity-40 ${v.wake === "off" ? "border-holo/30 text-ink/60" : "border-ok/50 text-ok"}`}
             aria-pressed={v.wake !== "off"} title="Listen for the wake phrase">
@@ -101,6 +107,7 @@ export default function VoicePanel({ engine, busy, demo, expect, transcript, ale
       {log && (
         <div className="dev-panel dev-scroll absolute bottom-[calc(100%+8px)] right-0 z-40 max-h-80 w-[min(480px,92vw)] overflow-y-auto p-4 brief-in">
           <div className="flex items-center justify-between"><p className="dev-title">Conversation</p><span className="text-[10.5px] text-ink/50">Brain: {engine}</span></div>
+          {aiNote && <p className="mt-1 rounded-lg border border-alert/40 bg-alert/10 px-2 py-1 text-[11px] text-alert">AI model offline, Cosmo is answering from its on-board brain. Reason: {aiNote}</p>}
           <ol className="mt-2 space-y-2 text-sm">
             {transcript.length === 0 && <li className="text-ink/55">Nothing said yet.</li>}
             {transcript.map((l, i) => (

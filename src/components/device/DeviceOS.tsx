@@ -253,7 +253,7 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
           ))}
         </nav>
         <div className="lg:-mt-10"><VoiceOrb size={112} alert={status === "alert"} onTap={convo.talk} /></div>
-        <VoicePanel engine={convo.engine} busy={convo.busy} demo={convo.demo} expect={convo.expect} transcript={convo.transcript} alert={status === "alert"}
+        <VoicePanel engine={convo.engine} aiNote={convo.aiNote} busy={convo.busy} demo={convo.demo} expect={convo.expect} transcript={convo.transcript} alert={status === "alert"}
           onDemo={(id) => convo.playDemo(id)} onCancelDemo={convo.cancelDemo} onAnswer={(t) => void convo.heard(t)}
           remembers={describeMemory(convo.memory)} onForget={convo.forget} />
       </footer>

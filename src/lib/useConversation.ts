@@ -112,6 +112,17 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
   const [busy, setBusy] = useState(false);
   const [engine, setEngine] = useState("on-board scripted");
   const engineRef = useRef("on-board scripted");
+  const engineAt = useRef(0);
+  /** Why the language model is not answering (null when it is). */
+  const [aiNote, setAiNote] = useState<string | null>(null);
+  const refreshEngine = useCallback(async () => {
+    engineAt.current = Date.now();
+    try {
+      const d = await fetch("/api/cosmo").then((r) => r.json());
+      if (d.engine) { engineRef.current = d.engine; setEngine(d.engine); }
+      setAiNote(d.engine === "on-board scripted" ? (d.error ?? "no language model configured") : null);
+    } catch { setAiNote("server unreachable"); }
+  }, []);
   const [demo, setDemo] = useState<string | null>(null);
   const [expect, setExpect] = useState<Turn["expect"]>(undefined);
   const [memory, setMemory] = useState<AstroMemory>(emptyMemory);
@@ -138,9 +149,9 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
     setPatience(astro.current.patience);
     // talked over Cosmo right after it started answering: next time, wait a little longer
     setBargeInHandler(({ msSinceAnswerStarted }) => { if (msSinceAnswerStarted < 5000) learn([{ kind: "patience", ms: 250 }]); });
-    fetch("/api/cosmo").then((r) => r.json()).then((d) => { if (d.engine) { engineRef.current = d.engine; setEngine(d.engine); } }).catch(() => {});
+    void refreshEngine();
     return () => setBargeInHandler(null);
-  }, [learn]);
+  }, [learn, refreshEngine]);
 
   const add = (who: Speaker, text: string) => {
     history.current = [...history.current.slice(-30), { who, text, time: Date.now() }];
@@ -179,6 +190,8 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
       let turn = decided;
       const c = getCtx();
       // Who answers: the on-board brain word for word, the brain reworded, or the AI agent
+      // the model link is re-checked while it is down, so Cosmo recovers by itself
+      if (utterance && engineRef.current === "on-board scripted" && Date.now() - engineAt.current > 30_000) await refreshEngine();
       const route = c && utterance && engineRef.current !== "on-board scripted" ? routeOf(turn.intent, c.status) : "exact";
       if (route !== "exact" && c && (turn.say.length || route === "agent")) {
         const d = c.devs;
@@ -196,6 +209,9 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
             }),
           }).then((r) => r.json());
           if (res.error) console.warn("[cosmo-agent]", res.error);
+          // a refusal for safety (a medicine was named) is not an outage
+          setAiNote(res.error && !/discarded/.test(res.error) ? String(res.error) : null);
+          if (res.error && /key|no API|rejected/i.test(String(res.error))) { engineRef.current = "on-board scripted"; setEngine("on-board scripted"); engineAt.current = Date.now(); }
           const lines: string[] = Array.isArray(res.lines) ? res.lines : [];
           const fromModel = res.engine && res.engine !== "on-board scripted" && !res.error && lines.length > 0;
           if (fromModel && route === "reword") turn = { ...turn, say: lines };
@@ -208,7 +224,7 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
             turn = mergeAgent(turn, reply);
             if (reply.remember.length) learn(reply.remember.map((text) => ({ kind: "fact", text } as Learn)));
           }
-        } catch (err) { console.warn("[cosmo-agent] unreachable, using the on-board reply", err); }
+        } catch (err) { console.warn("[cosmo-agent] unreachable, using the on-board reply", err); setAiNote("server unreachable"); }
       }
       m.pending = turn.pending;
       m.lastIntent = turn.intent;
@@ -381,5 +397,5 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
   const idleFor = () => (busyN.current ? 0 : Date.now() - mem.current.lastTurnAt);
 
   const forget = () => learn([{ kind: "forget" }]);
-  return { transcript, busy, engine, demo, expect, memory, forget, talk, handle, heard, say, announce, checkIn, playDemo, cancelDemo, reset, pendingNow, idleFor };
+  return { transcript, busy, engine, aiNote, demo, expect, memory, forget, talk, handle, heard, say, announce, checkIn, playDemo, cancelDemo, reset, pendingNow, idleFor };
 }

@@ -68,36 +68,75 @@ ACTIONS (optional, only from this list, only when they asked for it or agreed to
 Set "asks" to "yesno" if your reply ends with a yes-or-no question, otherwise "open".
 Return only JSON: {"lines": ["..."], "follow": true or false, "asks": "open", "actions": [], "remember": []}`;
 
-/* ---------- provider ---------- */
+/* ---------- providers ---------- */
 const GOOGLE = "https://generativelanguage.googleapis.com/v1beta/openai";
-function provider() {
-  const explicit = process.env.COSMO_MODEL_BASE_URL;
-  const gemini = process.env.GEMINI_API_KEY, groq = process.env.GROQ_API_KEY;
-  const base = explicit ?? (gemini ? GOOGLE : groq ? "https://api.groq.com/openai/v1" : undefined);
-  if (!base) return null;
-  const google = /googleapis\.com/.test(base);
-  const key = process.env.COSMO_MODEL_API_KEY ?? (google ? gemini : groq) ?? gemini ?? groq ?? "none";
-  return { base: base.replace(/\/$/, ""), key, google };
+const GROQ = "https://api.groq.com/openai/v1";
+interface Provider { base: string; key: string; google: boolean }
+
+/** A model id looks like "llama-3.3-70b-versatile"; a key pasted into the wrong variable is recognised and never shown. */
+const looksLikeKey = (s: string) => /^(gsk_|sk-|AIza|AQ\.)|^[A-Za-z0-9_-]{36,}$/.test(s);
+
+/**
+ * Every provider/key combination the environment allows, best guess first. Cosmo tries them in
+ * order, so one wrong variable (a key in the wrong field, a leftover key from another provider)
+ * cannot silence the model.
+ */
+function providers(): Provider[] {
+  const e = process.env;
+  const val = (k: string) => e[k]?.trim().replace(/^["']|["']$/g, "") || undefined;
+  const out: Provider[] = [];
+  const add = (base: string | undefined, key: string | undefined) => {
+    if (!base || !key) return;
+    const b = base.replace(/\/$/, "");
+    if (!out.some((p) => p.base === b && p.key === key)) out.push({ base: b, key, google: /googleapis\.com/.test(b) });
+  };
+  const explicit = val("COSMO_MODEL_BASE_URL");
+  const own = val("COSMO_MODEL_API_KEY"), gemini = val("GEMINI_API_KEY") ?? val("GOOGLE_API_KEY"), groq = val("GROQ_API_KEY");
+  const name = val("COSMO_MODEL_NAME");
+  const stray = name && looksLikeKey(name) ? name : undefined; // a key pasted into the model-name field
+  if (explicit) {
+    const g = /googleapis\.com/.test(explicit), q = /groq\.com/.test(explicit);
+    for (const k of g ? [gemini, own, stray] : q ? [groq, own, stray] : [own ?? "none"]) add(explicit, k);
+  }
+  add(GOOGLE, gemini);
+  add(GROQ, groq);
+  // keys recognised by their shape, whatever variable they were put in
+  for (const k of [own, stray, gemini, groq]) {
+    if (k && /^AIza|^AQ\./.test(k)) add(GOOGLE, k);
+    if (k && /^gsk_/.test(k)) add(GROQ, k);
+  }
+  if (own && !explicit) { add(GOOGLE, own); add(GROQ, own); }
+  return out;
 }
-type Provider = NonNullable<ReturnType<typeof provider>>;
 
 const PREFERRED = [/gemini-2\.5-flash$/i, /gemini-[\d.]+-flash$/i, /gemini.*flash(?!.*(lite|preview|exp))/i, /llama-3\.3-70b/i, /gpt-oss-120b/i, /qwen/i, /kimi-k2/i, /gpt-oss-20b/i, /llama-3\.1-8b/i, /llama/i, /gemini/i];
 const NOT_CHAT = /whisper|tts|guard|embed|vision|playai|orpheus|compound|imagen|veo|image|audio|live|aqa|robotics|computer-use/i;
-let cachedModel: string | null = null;
-/** A model id looks like "llama-3.3-70b-versatile"; a key pasted here by mistake is ignored and never shown. */
-const looksLikeKey = (s: string) => /^(gsk_|sk-|AIza)|^[A-Za-z0-9_-]{36,}$/.test(s);
-async function modelName(p: Provider): Promise<string | null> {
-  const env = process.env.COSMO_MODEL_NAME?.trim();
-  if (env && !looksLikeKey(env)) return env;
-  if (cachedModel) return cachedModel;
+const autoModel = new Map<string, string>();
+
+async function listModels(p: Provider): Promise<{ ids: string[]; status: number }> {
   try {
     const r = await fetch(`${p.base}/models`, { headers: { Authorization: `Bearer ${p.key}` }, signal: AbortSignal.timeout(5000) });
-    if (!r.ok) return null;
+    if (!r.ok) return { ids: [], status: r.status };
     const ids: string[] = ((await r.json())?.data ?? []).map((m: { id: string }) => m.id.replace(/^models\//, "")).filter((id: string) => !NOT_CHAT.test(id));
-    for (const re of PREFERRED) { const hit = ids.find((id) => re.test(id)); if (hit) return (cachedModel = hit); }
-    return (cachedModel = ids[0] ?? null);
-  } catch { return null; }
+    return { ids, status: 200 };
+  } catch { return { ids: [], status: 0 }; }
 }
+
+/** The model to use with a provider: COSMO_MODEL_NAME when it belongs to that provider, else a fast one from its list. */
+async function modelFor(p: Provider, auto = false): Promise<string | null> {
+  const env = process.env.COSMO_MODEL_NAME?.trim();
+  const fits = env && !looksLikeKey(env) && (p.google ? /gemini|gemma/i.test(env) : /groq\.com/.test(p.base) ? !/gemini|gemma/i.test(env) : true);
+  if (!auto && fits) return env!;
+  const key = `${p.base}|${p.key.slice(-6)}`;
+  if (autoModel.has(key)) return autoModel.get(key)!;
+  const { ids } = await listModels(p);
+  const hit = PREFERRED.map((re) => ids.find((id) => re.test(id))).find(Boolean) ?? ids[0];
+  if (hit) autoModel.set(key, hit);
+  return hit ?? null;
+}
+
+/** The provider that answered last time is tried first. */
+let good = 0;
 
 /* ---------- validation ---------- */
 type Action = { type: string; [k: string]: unknown };
@@ -116,28 +155,42 @@ const cleanLines = (lines: unknown) =>
   (Array.isArray(lines) ? lines : typeof lines === "string" ? [lines] : []).filter((l): l is string => typeof l === "string" && !!l.trim())
     .map((l) => l.replace(/[*_#`]/g, "").replace(/\s+/g, " ").trim()).slice(0, 4);
 
-export async function GET(req: Request) {
-  const p = provider();
-  const name = p ? await modelName(p) : null;
-  // /api/cosmo?models=1 lists the chat models the key can use (ids only, never the key)
-  if (p && new URL(req.url).searchParams.get("models")) {
-    try {
-      const r = await fetch(`${p.base}/models`, { headers: { Authorization: `Bearer ${p.key}` }, signal: AbortSignal.timeout(5000) });
-      const ids: string[] = r.ok ? ((await r.json())?.data ?? []).map((m: { id: string }) => m.id.replace(/^models\//, "")).filter((id: string) => !NOT_CHAT.test(id)) : [];
-      return Response.json({ engine: name, host: new URL(p.base).host, models: ids, status: r.status });
-    } catch (err) { return Response.json({ engine: name, error: String(err).slice(0, 120) }); }
+let engineCache: { at: number; value: { engine: string; error?: string } } | null = null;
+/** Which model is really reachable right now (checked against each provider's model list, cached for a minute). */
+async function reachable(): Promise<{ engine: string; error?: string }> {
+  if (engineCache && Date.now() - engineCache.at < 60_000) return engineCache.value;
+  const all = providers();
+  let value: { engine: string; error?: string } = { engine: "on-board scripted", error: all.length ? undefined : "no API key found: set GEMINI_API_KEY or GROQ_API_KEY in Vercel" };
+  const order = [...all.slice(good), ...all.slice(0, good)];
+  const fails: string[] = [];
+  for (const p of order) {
+    const { status } = await listModels(p);
+    if (status === 200) { const m = await modelFor(p); if (m) { value = { engine: m }; break; } }
+    fails.push(`${new URL(p.base).host}: key rejected (${status || "unreachable"})`);
   }
-  return Response.json({ engine: name ?? "on-board scripted" });
+  if (value.engine === "on-board scripted" && fails.length) value.error = fails.join("; ");
+  engineCache = { at: Date.now(), value };
+  return value;
+}
+
+export async function GET(req: Request) {
+  // /api/cosmo?models=1 lists, per configured provider, the chat models its key can use (ids only, never a key)
+  if (new URL(req.url).searchParams.get("models")) {
+    const list = await Promise.all(providers().map(async (p) => {
+      const { ids, status } = await listModels(p);
+      return { host: new URL(p.base).host, keyAccepted: status === 200, status, using: status === 200 ? await modelFor(p) : null, models: ids };
+    }));
+    return Response.json({ providers: list });
+  }
+  return Response.json(await reachable());
 }
 
 export async function POST(req: Request) {
   const body = (await req.json()) as Body;
   const mode = body.mode ?? "reword";
   const fallback = { lines: body.draft, actions: [], remember: [], follow: true, engine: "on-board scripted" };
-  const p = provider();
-  if (!p) return Response.json(fallback);
-  const model = await modelName(p);
-  if (!model) return Response.json({ ...fallback, error: "no model: set COSMO_MODEL_NAME to a model id, or check the key" });
+  const all = providers();
+  if (!all.length) return Response.json({ ...fallback, error: "no API key found: set GEMINI_API_KEY or GROQ_API_KEY in Vercel" });
 
   const context = [
     `STATUS: ${body.status}${body.clock ? `   STATION TIME: ${body.clock}` : ""}`,
@@ -150,46 +203,67 @@ export async function POST(req: Request) {
   ].filter(Boolean).join("\n\n");
 
   // provider errors are returned to help set the model up, with anything key-like removed
-  const scrub = (s: string) => s.split(p.key).join("[key]").replace(/\b(sk|gsk|key|AIza)[-_A-Za-z0-9]{8,}/g, "[key]").slice(0, 300);
-  const call = (extras: boolean, ms: number) => fetch(`${p.base}/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.key}` },
-    body: JSON.stringify({
-      model,
-      temperature: mode === "chat" ? 0.8 : 0.4,
-      // room for models that reason before answering (their hidden thinking counts against this)
-      max_tokens: 2000,
-      // JSON mode, and on Gemini keep the hidden thinking short so the voice reply is fast
-      ...(extras ? { response_format: { type: "json_object" }, ...(p.google ? { reasoning_effort: "low" } : {}) } : {}),
-      messages: [{ role: "system", content: mode === "chat" ? CHAT : REWORD }, { role: "user", content: context }],
-    }),
-    signal: AbortSignal.timeout(ms),
-  });
+  const scrub = (s: string) => all.reduce((t, p) => t.split(p.key).join("[key]"), s).replace(/\b(sk-|gsk_|AIza|AQ\.)[-_.A-Za-z0-9]{8,}/g, "[key]").replace(/\s+/g, " ").slice(0, 240);
 
-  /** One attempt: returns the parsed reply, or an error string. */
-  const attempt = async (extras: boolean, ms: number): Promise<{ parsed?: Record<string, unknown>; error?: string; retry?: boolean }> => {
+  type Out = { parsed?: Record<string, unknown>; error?: string; retry?: boolean; auth?: boolean; noModel?: boolean };
+  /** One call to one provider. */
+  const attempt = async (p: Provider, model: string, extras: boolean, ms: number): Promise<Out> => {
     let res: Response;
-    try { res = await call(extras, ms); } catch (err) { return { error: scrub(String(err)), retry: !/timeout|aborted/i.test(String(err)) }; }
+    try {
+      res = await fetch(`${p.base}/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.key}` },
+        body: JSON.stringify({
+          model,
+          temperature: mode === "chat" ? 0.8 : 0.4,
+          // room for models that reason before answering (their hidden thinking counts against this)
+          max_tokens: 2000,
+          // JSON mode, and on Gemini keep the hidden thinking short so the voice reply is fast
+          ...(extras ? { response_format: { type: "json_object" }, ...(p.google ? { reasoning_effort: "low" } : {}) } : {}),
+          messages: [{ role: "system", content: mode === "chat" ? CHAT : REWORD }, { role: "user", content: context }],
+        }),
+        signal: AbortSignal.timeout(ms),
+      });
+    } catch (err) { return { error: scrub(String(err)), retry: !/timeout|aborted/i.test(String(err)) }; }
     if (!res.ok) {
       const why = scrub(await res.text());
-      // 400: this model rejects JSON mode or the reasoning setting, so ask again plainly. 429/5xx: try once more.
-      return { error: `model ${res.status}: ${why}`, retry: res.status === 400 || res.status === 422 || res.status === 429 || res.status >= 500 };
+      const auth = res.status === 401 || res.status === 403 || /api key|api_key|unauthor|permission/i.test(why);
+      const noModel = res.status === 404 || /model.{0,40}(not found|not supported|does not exist|decommission)/i.test(why);
+      // 400: this model may reject JSON mode or the reasoning setting, so ask again plainly. 429/5xx: try once more.
+      return { error: `${new URL(p.base).host} ${res.status}: ${why}`, auth, noModel, retry: !auth && !noModel && (res.status === 400 || res.status === 422 || res.status === 429 || res.status >= 500) };
     }
     const data = await res.json();
     const c = data?.choices?.[0];
     const text = String(c?.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-    const a = text.indexOf("{"), b = text.lastIndexOf("}");
+    const i = text.indexOf("{"), j = text.lastIndexOf("}");
     try {
-      if (a >= 0 && b > a) return { parsed: JSON.parse(text.slice(a, b + 1)) };
+      if (i >= 0 && j > i) return { parsed: JSON.parse(text.slice(i, j + 1)) };
     } catch { /* fall through to plain text */ }
-    if (mode === "chat" && text && a < 0) return { parsed: { lines: text.split(/(?<=[.!?])\s+(?=[A-Z])/).slice(0, 3), follow: false } };
+    if (mode === "chat" && text && i < 0) return { parsed: { lines: text.split(/(?<=[.!?])\s+(?=[A-Z])/).slice(0, 3), follow: false } };
     return { error: `unreadable reply (finish: ${c?.finish_reason ?? "?"}): ${scrub(text.slice(0, 120))}`, retry: true };
   };
 
   const started = Date.now();
-  let out = await attempt(true, 9000);
-  if (!out.parsed && out.retry && Date.now() - started < 6000) out = await attempt(false, 8000);
-  if (!out.parsed) return Response.json({ ...fallback, engine: model, error: out.error });
+  const left = () => 13_000 - (Date.now() - started);
+  const errors: string[] = [];
+  let out: Out = {};
+  let model = "";
+  const order = all.map((_, i) => (good + i) % all.length);
+  for (const idx of order) {
+    if (left() < 2500) break;
+    const p = all[idx];
+    let m = await modelFor(p);
+    if (!m) { errors.push(`${new URL(p.base).host}: key rejected or no models`); continue; }
+    out = await attempt(p, m, true, Math.min(9000, left()));
+    if (!out.parsed && out.noModel) { // the named model does not exist here: pick one from the provider's list
+      const alt = await modelFor(p, true);
+      if (alt && alt !== m && left() > 2500) { m = alt; out = await attempt(p, m, true, Math.min(9000, left())); }
+    }
+    if (!out.parsed && out.retry && left() > 2500) out = await attempt(p, m, false, Math.min(8000, left()));
+    if (out.parsed) { good = idx; model = m; break; }
+    if (out.error) errors.push(out.error);
+  }
+  if (!out.parsed) return Response.json({ ...fallback, error: errors.join(" | ") || "model did not answer in time" });
 
   const parsed = out.parsed;
   const lines = cleanLines(parsed.lines);

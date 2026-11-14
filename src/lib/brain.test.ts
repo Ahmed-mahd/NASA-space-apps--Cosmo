@@ -570,3 +570,21 @@ describe("who answers: on-board, reworded, or the AI agent", () => {
     assert.ok(t.learn?.some((l) => l.kind === "fact" && /coffee black/.test(l.text)));
   });
 });
+
+describe("open conversation never hits a dead end", () => {
+  const lines = ["what's your favourite planet and why", "I was thinking about my garden back home", "why is the sky black in space", "my commander keeps changing the schedule",
+    "pizza", "do you think we will find life on Europa", "I watched the sunrise over the Pacific this morning", "tell me about the history of rockets", "banana spaceship umbrella"];
+  it("no 'not sure what you mean' and no menu of commands, even twice in a row", () => {
+    const s = session();
+    for (const l of lines) {
+      const said = s.say(l).flatMap((t) => t.say).join(" ");
+      assert.ok(said.length > 0, l);
+      assert.doesNotMatch(said, /not sure (what you mean|I got that)|Try: /i, l);
+    }
+  });
+  it("statements are reflected back and followed up", () => {
+    const t = session().say("I was thinking about my garden back home")[0];
+    assert.match(t.say.join(" "), /you were thinking about your garden back home/i);
+    assert.match(t.say.join(" "), /\?|Tell me more/);
+  });
+});
