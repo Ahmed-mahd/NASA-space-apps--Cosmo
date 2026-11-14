@@ -43,6 +43,7 @@ const REGIONS = ["brain", "eyes", "inner-ear", "mind", "heart", "lungs", "immune
 const PERSONA = `You are Cosmo, the AI health companion living in an astronaut's wrist device on a long space mission (day 142, far from Earth, messages home are delayed).
 You speak out loud. Write plain spoken English: short sentences, contractions, no lists, no markdown, no emoji, no stage directions.
 Personality: warm, curious, quick, genuinely funny, like the crewmate everyone wants on shift. Humor is playful when STATUS is nominal, gentle when advisory, absent when alert.
+Never invent the astronaut's name, rank or family. Use a name only if it is in MEMORY or they just told you; otherwise just talk to them directly.
 You know this astronaut. MEMORY holds what you have learned about them; use it naturally (their name, the people they love, what helps them, how they like you to talk). Follow any preference in MEMORY.
 You can see their live READINGS and active CONDITIONS. Refer to them when relevant.
 HEALTH RULES, never break them:
@@ -209,7 +210,8 @@ async function reachable(): Promise<{ engine: string; error?: string }> {
   const fails: string[] = [];
   for (const p of [...all.slice(good), ...all.slice(0, good)]) {
     const { status } = await listModels(p);
-    const m = status === 200 ? (await candidates(p))[0] : null;
+    // OpenRouter's public model list can be slow; its curated models work without it
+    const m = status === 200 || (p.openrouter && status !== 401 && status !== 403) ? (await candidates(p))[0] : null;
     if (m) { value = { engine: m }; break; }
     fails.push(`${new URL(p.base).host}: key rejected (${status || "unreachable"})`);
   }
@@ -373,7 +375,13 @@ export async function POST(req: Request) {
     if (nums(body.draft.join(" ")) !== nums(lines.join(" "))) return Response.json({ ...fallback, engine: model });
     return Response.json({ lines, actions: [], remember: [], follow: true, engine: model });
   }
-  const remember = (Array.isArray(parsed.remember) ? parsed.remember : []).filter((r: unknown): r is string => typeof r === "string" && r.length > 3 && r.length < 160).slice(0, 4);
+  // keep only facts the astronaut actually gave: any name in a remembered fact must appear in what they said
+  const said = `${body.utterance} ${(body.history ?? []).filter((h) => h.who !== "cosmo").map((h) => h.text).join(" ")}`.toLowerCase();
+  const COMMON = /^(The|They|Their|Astronaut|Cosmo|Earth|Mars|Moon|NASA|When|Likes|Enjoys|Wants|Has|Is|Does|Prefers|Finds|Asked|Dislikes|Feels|Misses|Works|Mission|Sun|Loves|Hates|Thinks|Gets|Needs|Mentioned|Was|Had|Would|Recently)$/;
+  const remember = (Array.isArray(parsed.remember) ? parsed.remember : [])
+    .filter((r: unknown): r is string => typeof r === "string" && r.length > 3 && r.length < 160)
+    .filter((r: string) => (r.match(/\b[A-Z][a-z]{2,}\b/g) ?? []).filter((w) => !COMMON.test(w)).every((w) => said.includes(w.toLowerCase())))
+    .slice(0, 4);
   return Response.json({
     lines, actions: safeActions(parsed.actions), remember, follow: parsed.follow !== false,
     asks: parsed.asks === "yesno" ? "yesno" : "open", engine: model, ms: Date.now() - started,

@@ -836,11 +836,11 @@ function openTalk(raw: string, c: BrainContext): Turn {
   let say: string[];
   if (isQuestion) {
     say = again
-      ? ["I'd love to get into that properly. I'm on my on-board brain at the moment, without my language model, so I can't look it up.", "What made you think of it?"]
+      ? ["I'd love to dig into that once the link to Earth is back and I can check my references.", "What made you think of it?"]
       : [[
-          "Good question. Right now I'm running on board, without my language model, so I can't give you a proper answer to that one.",
-          "I like that question. I'm on my on-board brain right now, so I can't look it up for you.",
-          "That's a good one. My language model isn't reachable right now, so I can't answer it properly.",
+          "Good question. That one's beyond what I carry on board, and the link to Earth is too slow to check right now.",
+          "I like that question. I don't have that in my on-board memory, so I'd only be guessing.",
+          "That's a good one. It's outside what I keep on board, and I'd rather not make something up.",
         ][n], "Tell me what you think, though. I'm curious."];
   } else if (short) {
     say = [["Go on, I'm listening.", "Tell me more.", "I'm here. Say a bit more?"][n]];

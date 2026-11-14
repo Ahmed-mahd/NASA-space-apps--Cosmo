@@ -150,7 +150,10 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
     // talked over Cosmo right after it started answering: next time, wait a little longer
     setBargeInHandler(({ msSinceAnswerStarted }) => { if (msSinceAnswerStarted < 5000) learn([{ kind: "patience", ms: 250 }]); });
     void refreshEngine();
-    return () => setBargeInHandler(null);
+    // while the model is unreachable, check again every 20 s (and retry quickly right after load)
+    const quick = window.setTimeout(() => { if (engineRef.current === "on-board scripted") void refreshEngine(); }, 4000);
+    const poll = window.setInterval(() => { if (engineRef.current === "on-board scripted") void refreshEngine(); }, 20_000);
+    return () => { setBargeInHandler(null); window.clearTimeout(quick); window.clearInterval(poll); };
   }, [learn, refreshEngine]);
 
   const add = (who: Speaker, text: string) => {
@@ -191,8 +194,8 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
       const c = getCtx();
       // Who answers: the on-board brain word for word, the brain reworded, or the AI agent
       // the model link is re-checked while it is down, so Cosmo recovers by itself
-      if (utterance && engineRef.current === "on-board scripted" && Date.now() - engineAt.current > 30_000) await refreshEngine();
-      const route = c && utterance && engineRef.current !== "on-board scripted" ? routeOf(turn.intent, c.status) : "exact";
+      // always ask the server: if a model is reachable it answers, and the page heals itself even after a failed start
+      const route = c && utterance ? routeOf(turn.intent, c.status) : "exact";
       if (route !== "exact" && c && (turn.say.length || route === "agent")) {
         const d = c.devs;
         const r1 = (v: number | null | undefined) => Math.round(v ?? 0);
@@ -217,9 +220,10 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
           window.clearTimeout(fillerTimer);
           if (filler) await filler;
           if (res.error) console.warn("[cosmo-agent]", res.error);
+          if (res.engine && res.engine !== "on-board scripted" && !res.error) { engineRef.current = res.engine; setEngine(res.engine); engineAt.current = Date.now(); }
           // a refusal for safety (a medicine was named) is not an outage
           setAiNote(res.error && !/discarded/.test(res.error) ? String(res.error) : null);
-          if (res.error && /key|no API|rejected/i.test(String(res.error))) { engineRef.current = "on-board scripted"; setEngine("on-board scripted"); engineAt.current = Date.now(); }
+          if (res.error && /no API key|rejected/i.test(String(res.error))) { engineRef.current = "on-board scripted"; setEngine("on-board scripted"); }
           const lines: string[] = Array.isArray(res.lines) ? res.lines : [];
           const fromModel = res.engine && res.engine !== "on-board scripted" && !res.error && lines.length > 0;
           // remember which model answered, so the next question goes straight to it
@@ -409,5 +413,5 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
   const idleFor = () => (busyN.current ? 0 : Date.now() - mem.current.lastTurnAt);
 
   const forget = () => learn([{ kind: "forget" }]);
-  return { transcript, busy, engine, aiNote, demo, expect, memory, forget, talk, handle, heard, say, announce, checkIn, playDemo, cancelDemo, reset, pendingNow, idleFor };
+  return { transcript, busy, engine, aiNote, refreshEngine, demo, expect, memory, forget, talk, handle, heard, say, announce, checkIn, playDemo, cancelDemo, reset, pendingNow, idleFor };
 }

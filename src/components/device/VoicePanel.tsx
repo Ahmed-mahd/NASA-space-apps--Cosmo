@@ -15,6 +15,8 @@ interface Props {
   engine: string;
   /** Why the language model is not answering, if it is not. */
   aiNote: string | null;
+  /** Check the language model link again now. */
+  onRecheck: () => void;
   busy: boolean;
   demo: string | null;
   expect: Turn["expect"];
@@ -30,7 +32,7 @@ interface Props {
 }
 
 /** The conversation text box: what Cosmo is doing, live captions, answer hints and the transcript. */
-export default function VoicePanel({ engine, aiNote, busy, demo, expect, transcript, alert, onDemo, onCancelDemo, onAnswer, remembers, onForget }: Props) {
+export default function VoicePanel({ engine, aiNote, onRecheck, busy, demo, expect, transcript, alert, onDemo, onCancelDemo, onAnswer, remembers, onForget }: Props) {
   const v = useVoice();
   const [log, setLog] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -51,10 +53,10 @@ export default function VoicePanel({ engine, aiNote, busy, demo, expect, transcr
         <span className="h-1.5 w-1.5 flex-none rounded-full" style={{ background: v.wake === "off" ? "var(--ink)" : v.listening || v.wake === "awake" ? "var(--ok)" : "var(--holo)", opacity: v.wake === "off" ? 0.3 : 1 }} />
         <p className="min-w-0 flex-1 basis-[60%] truncate text-[11px] tracking-wide text-ink/60 sm:basis-0">{status}</p>
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className={`rounded-full border px-2.5 py-1 text-[11px] ${aiNote || engine === "on-board scripted" ? "border-alert/50 text-alert" : "border-ok/50 text-ok"}`}
-            title={aiNote ?? (engine === "on-board scripted" ? "No language model configured" : `Language model: ${engine}`)}>
+          <button type="button" onClick={onRecheck} className={`rounded-full border px-2.5 py-1 text-[11px] ${aiNote || engine === "on-board scripted" ? "border-alert/50 text-alert" : "border-ok/50 text-ok"}`}
+            title={`${aiNote ?? (engine === "on-board scripted" ? "No language model reachable" : `Language model: ${engine}`)}. Click to check again.`}>
             {aiNote || engine === "on-board scripted" ? "AI offline" : "AI on"}
-          </span>
+          </button>
           <button type="button" onClick={() => (v.wake === "off" ? enableWake() : disableWake())} disabled={!v.supported.stt}
             className={`rounded-full border px-2.5 py-1 text-[11px] disabled:opacity-40 ${v.wake === "off" ? "border-holo/30 text-ink/60" : "border-ok/50 text-ok"}`}
             aria-pressed={v.wake !== "off"} title="Listen for the wake phrase">
