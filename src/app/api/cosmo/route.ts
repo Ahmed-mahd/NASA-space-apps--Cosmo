@@ -111,7 +111,7 @@ export async function POST(req: Request) {
   const p = provider();
   if (!p) return Response.json(fallback);
   const model = await modelName(p);
-  if (!model) return Response.json(fallback);
+  if (!model) return Response.json({ ...fallback, error: "no model: set COSMO_MODEL_NAME or check the provider's model list" });
   if (mode === "reword" && (EXACT.test(body.intent) || body.status === "alert")) return Response.json({ ...fallback, engine: model });
 
   const context = [
@@ -124,23 +124,37 @@ export async function POST(req: Request) {
     mode === "reword" ? `DRAFT: ${JSON.stringify(body.draft)}` : "",
   ].filter(Boolean).join("\n\n");
 
+  // provider errors are returned to help set the model up, with anything key-like removed
+  const scrub = (s: string) => s.split(p.key).join("[key]").replace(/\b(sk|gsk|key|AIza)[-_A-Za-z0-9]{8,}/g, "[key]").slice(0, 300);
+  const call = (json: boolean) => fetch(`${p.base}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.key}` },
+    body: JSON.stringify({
+      model,
+      temperature: mode === "chat" ? 0.7 : 0.4,
+      max_tokens: 400,
+      ...(json ? { response_format: { type: "json_object" } } : {}),
+      messages: [{ role: "system", content: mode === "chat" ? CHAT : REWORD }, { role: "user", content: context }],
+    }),
+    signal: AbortSignal.timeout(12000),
+  });
+
   try {
-    const res = await fetch(`${p.base}/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${p.key}` },
-      body: JSON.stringify({
-        model,
-        temperature: mode === "chat" ? 0.7 : 0.4,
-        max_tokens: 320,
-        response_format: { type: "json_object" },
-        messages: [{ role: "system", content: mode === "chat" ? CHAT : REWORD }, { role: "user", content: context }],
-      }),
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return Response.json({ ...fallback, error: `model ${res.status}` });
+    let res = await call(true);
+    if (res.status === 400 || res.status === 422) {
+      const why = await res.text();
+      // some models reject strict JSON mode: ask again without it (the prompt still asks for JSON)
+      if (/response_format|json/i.test(why)) res = await call(false);
+      else return Response.json({ ...fallback, engine: model, error: `model ${res.status}: ${scrub(why)}` });
+    }
+    if (!res.ok) return Response.json({ ...fallback, engine: model, error: `model ${res.status}: ${scrub(await res.text())}` });
     const data = await res.json();
-    const text: string = (data?.choices?.[0]?.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "");
-    const parsed = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+    const text: string = String(data?.choices?.[0]?.message?.content ?? "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    const a = text.indexOf("{"), b = text.lastIndexOf("}");
+    let parsed: { lines?: unknown; actions?: unknown; remember?: unknown };
+    if (a >= 0 && b > a) parsed = JSON.parse(text.slice(a, b + 1));
+    else if (mode === "chat" && text) parsed = { lines: text.split(/(?<=[.!?])\s+(?=[A-Z])/).slice(0, 3) }; // plain-text reply
+    else return Response.json({ ...fallback, engine: model, error: `unreadable reply: ${scrub(text.slice(0, 120))}` });
     const lines = cleanLines(parsed.lines);
     // a reply that names a drug or dose is thrown away
     if (!lines.length || lines.some((l) => DRUGS.test(l))) return Response.json({ ...fallback, engine: model });
@@ -152,7 +166,7 @@ export async function POST(req: Request) {
     }
     const remember = (Array.isArray(parsed.remember) ? parsed.remember : []).filter((r: unknown) => typeof r === "string" && r.length < 160).slice(0, 3);
     return Response.json({ lines, actions: safeActions(parsed.actions), remember, engine: model });
-  } catch {
-    return Response.json(fallback);
+  } catch (err) {
+    return Response.json({ ...fallback, engine: model, error: scrub(String(err)) });
   }
 }
