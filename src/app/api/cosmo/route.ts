@@ -98,9 +98,17 @@ const cleanLines = (lines: unknown) =>
   (Array.isArray(lines) ? lines : []).filter((l): l is string => typeof l === "string" && !!l.trim())
     .map((l) => l.replace(/[*_#`]/g, "").trim()).slice(0, 4);
 
-export async function GET() {
+export async function GET(req: Request) {
   const p = provider();
   const name = p ? await modelName(p) : null;
+  // /api/cosmo?models=1 lists the chat models the key can use (ids only, never the key)
+  if (p && new URL(req.url).searchParams.get("models")) {
+    try {
+      const r = await fetch(`${p.base}/models`, { headers: { Authorization: `Bearer ${p.key}` }, signal: AbortSignal.timeout(5000) });
+      const ids: string[] = r.ok ? ((await r.json())?.data ?? []).map((m: { id: string }) => m.id) : [];
+      return Response.json({ engine: name, host: new URL(p.base).host, fromEnvName: !!process.env.COSMO_MODEL_NAME, models: ids, status: r.status });
+    } catch (err) { return Response.json({ engine: name, error: String(err).slice(0, 120) }); }
+  }
   return Response.json({ engine: name ?? "on-board scripted" });
 }
 
@@ -132,7 +140,8 @@ export async function POST(req: Request) {
     body: JSON.stringify({
       model,
       temperature: mode === "chat" ? 0.7 : 0.4,
-      max_tokens: 400,
+      // room for models that reason before answering (their hidden thinking counts against this)
+      max_tokens: 2000,
       ...(json ? { response_format: { type: "json_object" } } : {}),
       messages: [{ role: "system", content: mode === "chat" ? CHAT : REWORD }, { role: "user", content: context }],
     }),
@@ -154,7 +163,10 @@ export async function POST(req: Request) {
     let parsed: { lines?: unknown; actions?: unknown; remember?: unknown };
     if (a >= 0 && b > a) parsed = JSON.parse(text.slice(a, b + 1));
     else if (mode === "chat" && text) parsed = { lines: text.split(/(?<=[.!?])\s+(?=[A-Z])/).slice(0, 3) }; // plain-text reply
-    else return Response.json({ ...fallback, engine: model, error: `unreadable reply: ${scrub(text.slice(0, 120))}` });
+    else {
+      const c = data?.choices?.[0];
+      return Response.json({ ...fallback, engine: model, error: `unreadable reply (finish: ${c?.finish_reason ?? "?"}, reasoning: ${c?.message?.reasoning || c?.message?.reasoning_content ? "yes" : "no"}): ${scrub(text.slice(0, 120))}` });
+    }
     const lines = cleanLines(parsed.lines);
     // a reply that names a drug or dose is thrown away
     if (!lines.length || lines.some((l) => DRUGS.test(l))) return Response.json({ ...fallback, engine: model });
