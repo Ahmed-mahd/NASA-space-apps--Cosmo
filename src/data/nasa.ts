@@ -231,6 +231,22 @@ export const csa = {
   },
 };
 
+/**
+ * NASA behavioral health support for crews (beyond the five challenge pages).
+ * Cosmo offers these as the "talk to a person" options in mental-health conversations.
+ */
+export const behavioralSupport = {
+  points: [
+    "NASA's Behavioral Health and Performance team supports ISS crew members and their families before, during and after a mission.",
+    "Private psychological conferences are confidential video calls between an astronaut and a NASA psychologist or psychiatrist, usually on weekends.",
+    "In-mission support also includes private family conferences.",
+  ],
+  sources: [
+    { label: "NASA JSC Behavioral Health and Performance", url: "https://www.nasa.gov/reference/jsc-behavioral-health/" },
+    { label: "NASA OCHMO technical brief: behavioral health", url: "https://www.nasa.gov/wp-content/uploads/2023/12/ochmo-tb-016-behavioral-health.pdf" },
+  ],
+};
+
 /** Lookup helpers */
 export const risksByRegion = (r: BodyRegion) => risks.filter((x) => x.region === r);
 export const risksByHazard = (h: HazardId) => risks.filter((x) => x.hazards.includes(h));

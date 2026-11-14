@@ -167,3 +167,10 @@ body {
 @keyframes listen-pulse { 0% { transform: scale(1); opacity: .7; } 100% { transform: scale(1.7); opacity: 0; } }
 .listen-pulse { animation: listen-pulse 1.2s ease-out infinite; }
 @media (prefers-reduced-motion: reduce) { .mind-talk, .mind-laugh, .listen-pulse { animation: none; } }
+
+/* voice orb */
+.voice-orb { transition: transform .2s ease; }
+.voice-orb:hover { transform: scale(1.04); }
+.voice-orb:active { transform: scale(.97); }
+.voice-orb:focus-visible { outline: 2px solid var(--holo); outline-offset: 4px; }
+@media (prefers-reduced-motion: reduce) { .voice-orb, .voice-orb:hover, .voice-orb:active { transform: none; transition: none; } }

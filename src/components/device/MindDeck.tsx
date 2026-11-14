@@ -250,28 +250,21 @@ const WEEK: { day: string; mood: MoodId }[] = [
   { day: "Day 139", mood: "tired" }, { day: "Day 140", mood: "low" }, { day: "Day 141", mood: "okay" },
 ];
 
-export default function MindDeck({ request, mood, onMood, status, stress, hrv }: {
-  request: { activity: Activity; nonce: number } | null; mood: MoodId | null; onMood: (m: MoodId) => void;
+export default function MindDeck({ request, mood, status, stress, hrv, journal, onJournal, onCheckIn }: {
+  request: { activity: Activity; nonce: number } | null; mood: MoodId | null;
   status: CrewStatus; stress: number | null; hrv: number | null;
+  journal: string[]; onJournal: (t: string) => void;
+  /** Starts a check-in conversation through Cosmo's brain (it asks before it suggests). */
+  onCheckIn: () => void;
 }) {
   const [active, setActive] = useState<Activity>("home");
   const [lastNonce, setLastNonce] = useState(0);
   if (request && request.nonce !== lastNonce) { setLastNonce(request.nonce); setActive(request.activity); }
   const [jokeIdx, setJokeIdx] = useState(0);
   const [laughs, setLaughs] = useState(0);
-  const [journal, setJournal] = useState<string[]>(["Grew the first lettuce leaves in the veggie unit."]);
-  const [checking, setChecking] = useState(false);
   const [round, setRound] = useState(0);
-
-  const checkIn = async () => {
-    setChecking(true);
-    await speak("How are you feeling right now?");
-    const heard = await listen();
-    setChecking(false);
-    const m = MOODS.find((x) => x.words.test(heard));
-    if (m) { onMood(m.id); await speak(m.reply); }
-    else if (heard) await speak("Thanks for telling me. I'll note it as okay. You can always just say how you feel.");
-  };
+  const v = useVoice();
+  const checking = v.listening || v.thinking;
 
   const cur = MOODS.find((m) => m.id === mood);
   return (
@@ -302,8 +295,8 @@ export default function MindDeck({ request, mood, onMood, status, stress, hrv }:
               <CosmoAvatar size={120} />
               <div className="flex-1">
                 <p className="text-2xl font-semibold">How&rsquo;s your head today?</p>
-                <p className="text-sm text-ink/65">Talk to Cosmo the way you&rsquo;d talk to a friend. It listens for how you feel and suggests something that helps.</p>
-                <button type="button" onClick={checkIn} className="mt-3 rounded-full bg-violet px-5 py-2.5 text-sm font-medium text-white">{checking ? "Listening…" : "🎙 Voice check-in"}</button>
+                <p className="text-sm text-ink/65">Talk to Cosmo the way you&rsquo;d talk to a friend. It asks what&rsquo;s behind a feeling and what usually helps you, before it suggests anything.</p>
+                <button type="button" onClick={onCheckIn} className="mt-3 rounded-full bg-violet px-5 py-2.5 text-sm font-medium text-white">{checking ? "Listening…" : "🎙 Voice check-in"}</button>
               </div>
             </div>
             <div>
@@ -338,7 +331,7 @@ export default function MindDeck({ request, mood, onMood, status, stress, hrv }:
         ) : active === "earth" ? (
           <EarthWindow />
         ) : (
-          <Journal entries={journal} onAdd={(t) => setJournal((j) => [t, ...j])} />
+          <Journal entries={journal} onAdd={onJournal} />
         )}
       </section>
     </div>

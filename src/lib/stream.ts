@@ -18,13 +18,14 @@ import mmash from "@/data/clips/mmash-user22.json";
 import bidmc from "@/data/clips/bidmc.json";
 import type { Values, VitalKey } from "./vitals";
 
-export type StreamPhase = "normal" | "hypoxia" | "hypoxia-severe" | "flank-pain";
+export type StreamPhase = "normal" | "hypoxia" | "hypoxia-severe" | "flank-pain" | "stress";
 
 export const PHASES: { id: StreamPhase; label: string }[] = [
   { id: "normal", label: "Normal day" },
   { id: "hypoxia", label: "Mild hypoxia" },
   { id: "hypoxia-severe", label: "Hypoxia worsening" },
   { id: "flank-pain", label: "Flank pain" },
+  { id: "stress", label: "Stress spike" },
 ];
 
 export interface Reading {
@@ -83,6 +84,7 @@ export class ReplayStream {
   private blend = 0; // hypoxia recording
   private severe = 0; // extra simulated SpO2 drop
   private pain = 0; // flank-pain stress response
+  private strain = 0; // emotional stress: faster heart, lower HRV
   private rand = mulberry32(142);
   private last: Partial<Record<string, number>> = {};
 
@@ -114,7 +116,8 @@ export class ReplayStream {
     this.blend = ramp(this.blend, p === "hypoxia" || p === "hypoxia-severe");
     this.severe = ramp(this.severe, p === "hypoxia-severe");
     this.pain = ramp(this.pain, p === "flank-pain");
-    const b = this.blend, sv = this.severe, pn = this.pain;
+    this.strain = ramp(this.strain, p === "stress");
+    const b = this.blend, sv = this.severe, pn = this.pain, st = this.strain;
     const i = t % LIVE_LEN;
 
     // MMASH replay
@@ -134,9 +137,9 @@ export class ReplayStream {
     const respBase = respN == null || respL == null ? respN ?? respL : lerp(respN, respL, b);
 
     // Scenario shifts (simulated): faster heart and breathing, lower HRV under strain
-    const heartRate = hrRec == null ? null : hrRec + 9 * b + 8 * sv + 22 * pn;
-    const hrv = hrvRec == null ? null : hrvRec * (1 - 0.25 * b - 0.15 * sv - 0.45 * pn);
-    const respRate = respBase == null ? null : respBase + 3 * b + 4 * sv + 5 * pn;
+    const heartRate = hrRec == null ? null : hrRec + 9 * b + 8 * sv + 22 * pn + 26 * st;
+    const hrv = hrvRec == null ? null : hrvRec * (1 - 0.25 * b - 0.15 * sv - 0.45 * pn - 0.45 * st);
+    const respRate = respBase == null ? null : respBase + 3 * b + 4 * sv + 5 * pn + 1.5 * st;
 
     // Generated signals (simulated)
     const noise = () => (this.rand() - 0.5) * 2;
@@ -148,9 +151,9 @@ export class ReplayStream {
       t,
       clock: clockAt(t),
       phase: this.phase,
-      blend: Math.max(b, sv, pn),
+      blend: Math.max(b, sv, pn, st),
       shifted: [
-        ...(b + sv + pn > 0 ? (["heartRate", "hrv", "respRate"] as VitalKey[]) : []),
+        ...(b + sv + pn + st > 0 ? (["heartRate", "hrv", "respRate"] as VitalKey[]) : []),
         ...(sv > 0 ? (["spo2"] as VitalKey[]) : []),
       ],
       values: { heartRate, hrv, spo2, respRate, skinTemp, stress, activity: steps },

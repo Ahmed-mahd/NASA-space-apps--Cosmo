@@ -1,37 +1,55 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { oxygenReport, respond, type Action, type BrainContext, type FollowUp, type Pending, type Turn } from "./brain";
+import { majorAlert, oxygenReport, respond, type Action, type BrainContext, type FollowUp, type Pending, type Turn } from "./brain";
 import type { Condition, CrewStatus } from "./conditions";
 import type { Deviation } from "./baseline";
 import type { StreamPhase } from "./stream";
 import type { VitalKey } from "./vitals";
-import { initVoice, listen, speak, wait, type Speaker } from "./voice";
+import {
+  enableWake, followUp, getVoiceState, goToSleep, initVoice, setCommandHandler, setThinking, speak, stopSpeaking, wait, wakePreference, wakeUp,
+  type Speaker,
+} from "./voice";
+import { observe, type Observation } from "./watch";
+import type { HistoryPoint } from "./useVitals";
 
 export interface LiveContext {
   devs: Record<VitalKey, Deviation>;
   conditions: Condition[];
   status: CrewStatus;
   phase: StreamPhase;
+  history: HistoryPoint[];
+  clock: string;
+  stepsToday: number;
 }
 
 export interface TranscriptLine { who: Speaker; text: string; time: number }
 
-export interface DemoLine { who: "astronaut" | "crewmate"; text: string }
-export const DEMOS: Record<"hypoxia" | "flank", { title: string; lines: DemoLine[] }> = {
+type DemoStep =
+  | { who: "astronaut" | "crewmate"; text: string }
+  | { do: "phase"; phase: StreamPhase }
+  | { do: "ff"; seconds: number }
+  | { do: "check-in" }
+  | { do: "alert" };
+
+export type DemoId = "hypoxia" | "flank" | "lonely" | "alone";
+export const DEMOS: Record<DemoId, { title: string; blurb: string; steps: DemoStep[] }> = {
   hypoxia: {
     title: "Fatigue and headache",
-    lines: [
+    blurb: "Mild hypoxia, rest, recheck, joke",
+    steps: [
       { who: "astronaut", text: "Hey Cosmo, I've had a headache all morning and I'm really tired." },
       { who: "astronaut", text: "Okay. I'm resting now." },
       { who: "astronaut", text: "Much better, thanks." },
       { who: "astronaut", text: "Go on then." },
+      { who: "astronaut", text: "Ha! Good one." },
     ],
   },
   flank: {
     title: "Flank pain, crewmate helps",
-    lines: [
-      { who: "astronaut", text: "Cosmo, I've got a sharp pain in my lower back, on the right side." },
+    blurb: "Major alert, crewmate, kidney scan",
+    steps: [
+      { who: "astronaut", text: "Hey Cosmo, I've got a sharp pain in my lower back, on the right side." },
       { who: "astronaut", text: "About a seven." },
       { who: "crewmate", text: "Yes, I'm here. What do you need?" },
       { who: "crewmate", text: "Ready. I've got the probe." },
@@ -40,14 +58,61 @@ export const DEMOS: Record<"hypoxia" | "flank", { title: string; lines: DemoLine
       { who: "crewmate", text: "Done." },
     ],
   },
+  lonely: {
+    title: "Cosmo checks in first",
+    blurb: "Heart rate up, loneliness, a call home",
+    steps: [
+      { do: "phase", phase: "stress" },
+      { do: "ff", seconds: 95 },
+      { do: "check-in" },
+      { who: "astronaut", text: "Not really. I've been feeling kind of lonely." },
+      { who: "astronaut", text: "It's my daughter's birthday today, and I'm missing it." },
+      { who: "astronaut", text: "Mostly today." },
+      { who: "astronaut", text: "Talking to my family usually helps." },
+      { who: "astronaut", text: "Yes, please." },
+      { who: "astronaut", text: "Yes, thanks Cosmo." },
+      { do: "phase", phase: "normal" },
+    ],
+  },
+  alone: {
+    title: "Alone in an emergency",
+    blurb: "Oxygen drops, yes-or-no questions",
+    steps: [
+      { do: "phase", phase: "hypoxia-severe" },
+      { do: "ff", seconds: 100 },
+      { do: "alert" },
+      { who: "astronaut", text: "No. I'm alone." },
+      { who: "astronaut", text: "Yes." },
+      { who: "astronaut", text: "A little." },
+      { who: "astronaut", text: "Not yet." },
+      { who: "astronaut", text: "Yes, it's running." },
+      { who: "astronaut", text: "Yes." },
+      { who: "astronaut", text: "Much better." },
+      { who: "astronaut", text: "Not now, thanks." },
+    ],
+  },
 };
+
+interface Memory {
+  pending: Pending;
+  jokeIndex: number;
+  factIndex: number;
+  lastSaid: string[];
+  lastIntent?: string;
+  /** When the last turn ended (ms), so proactive check-ins never talk over a conversation. */
+  lastTurnAt: number;
+  expect?: Turn["expect"];
+}
 
 export function useConversation(getCtx: () => LiveContext | null, run: (a: Action) => void, setSpeed: (s: number) => void) {
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [busy, setBusy] = useState(false);
   const [engine, setEngine] = useState("on-board scripted");
   const [demo, setDemo] = useState<string | null>(null);
-  const mem = useRef<{ pending: Pending; jokeIndex: number; scanStep: number; activity?: BrainContext["activity"] }>({ pending: null, jokeIndex: 0, scanStep: -1 });
+  const [expect, setExpect] = useState<Turn["expect"]>(undefined);
+  const mem = useRef<Memory>({ pending: null, jokeIndex: 0, factIndex: 0, lastSaid: [], lastTurnAt: 0 });
+  const busyN = useRef(0);
+  const demoOn = useRef(false);
   const stopDemo = useRef(false);
 
   useEffect(() => {
@@ -55,7 +120,9 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
     fetch("/api/cosmo").then((r) => r.json()).then((d) => d.engine && setEngine(d.engine)).catch(() => {});
   }, []);
 
-  const add = (who: Speaker, text: string) => setTranscript((t) => [...t.slice(-40), { who, text, time: Date.now() }]);
+  const add = (who: Speaker, text: string) => setTranscript((t) => [...t.slice(-60), { who, text, time: Date.now() }]);
+  const begin = () => { busyN.current++; setBusy(true); };
+  const end = () => { busyN.current = Math.max(0, busyN.current - 1); if (!busyN.current) setBusy(false); mem.current.lastTurnAt = Date.now(); };
 
   const say = useCallback(async (lines: string[], who: Speaker = "cosmo") => {
     for (const l of lines) { add(who, l); await speak(l, who); }
@@ -64,97 +131,190 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
   const ctxFor = (): BrainContext | null => {
     const live = getCtx();
     if (!live) return null;
-    return { ...live, pending: mem.current.pending, jokeIndex: mem.current.jokeIndex, scanStep: mem.current.scanStep, activity: mem.current.activity };
+    const m = mem.current;
+    return {
+      devs: live.devs, conditions: live.conditions, status: live.status, phase: live.phase, clock: live.clock, stepsToday: live.stepsToday,
+      pending: m.pending, jokeIndex: m.jokeIndex, factIndex: m.factIndex, lastSaid: m.lastSaid, lastIntent: m.lastIntent,
+    };
   };
 
-  /** Run a decided turn: actions, optional rewording by the model, speech, then any follow-up. */
-  const playRef = useRef<(turn: Turn, utterance: string) => Promise<void>>(async () => {});
+  /** Run a decided turn: actions, optional rewording by the model, speech, then any follow-up. Returns the last turn played. */
+  const playRef = useRef<(turn: Turn, utterance: string) => Promise<Turn>>(async (t) => t);
   useEffect(() => {
     playRef.current = async (turn, utterance) => {
-      mem.current.pending = turn.pending;
-      if (turn.offer) mem.current.activity = turn.offer;
+      const m = mem.current;
+      m.pending = turn.pending;
+      m.lastIntent = turn.intent;
+      m.expect = turn.expect;
+      setExpect(turn.expect);
       let ff: { seconds: number; then: FollowUp } | null = null;
       for (const a of turn.actions) {
         if (a.type === "fastForward") { ff = a; continue; }
-        if (a.type === "scan") mem.current.scanStep = a.step;
         run(a);
       }
-      if (turn.joke) {
-        mem.current.jokeIndex++;
-        await say([turn.joke.setup]);
-        await wait(700);
-        await say([turn.joke.punch]);
-      } else if (turn.say.length) {
-        let lines = turn.say;
-        const c = getCtx();
-        if (engine !== "on-board scripted" && c) {
-          try {
-            const d = c.devs;
-            const res = await fetch("/api/cosmo", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ utterance, draft: lines, intent: turn.intent, status: c.status,
-                vitals: `HR ${Math.round(d.heartRate.recent ?? 0)}, SpO2 ${Math.round(d.spo2.recent ?? 0)}%, breathing ${Math.round(d.respRate.recent ?? 0)}/min` }),
-            }).then((r) => r.json());
-            if (Array.isArray(res.lines) && res.lines.length) lines = res.lines;
-          } catch { /* keep the on-board draft */ }
-        }
-        await say(lines);
+      let lines = turn.say;
+      const c = getCtx();
+      if (lines.length && engine !== "on-board scripted" && c) {
+        try {
+          const d = c.devs;
+          const res = await fetch("/api/cosmo", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ utterance, draft: lines, intent: turn.intent, status: c.status,
+              vitals: `HR ${Math.round(d.heartRate.recent ?? 0)}, SpO2 ${Math.round(d.spo2.recent ?? 0)}%, breathing ${Math.round(d.respRate.recent ?? 0)}/min` }),
+          }).then((r) => r.json());
+          if (Array.isArray(res.lines) && res.lines.length) lines = res.lines;
+        } catch { /* keep the on-board draft */ }
       }
+      setThinking(false);
+      if (lines.length) await say(lines);
+      if (turn.joke) {
+        m.jokeIndex++;
+        await say([turn.joke.setup]);
+        await wait(750);
+        await say([turn.joke.punch]);
+      }
+      if (turn.fact) m.factIndex++;
+      m.lastSaid = turn.joke ? [...lines, turn.joke.setup, turn.joke.punch] : lines;
       if (ff) {
         // TRY -> OBSERVE -> REASSESS: speed the simulation up while the astronaut waits, then recheck
+        setThinking(true);
         setSpeed(25);
         await wait((ff.seconds / 25) * 1000);
         setSpeed(1);
-        const c = ctxFor();
-        if (c) await playRef.current(oxygenReport(c, ff.then === "recheck-oxygen"), ff.then);
+        const c2 = ctxFor();
+        if (c2) return playRef.current(oxygenReport(c2, ff.then === "recheck-oxygen"), ff.then);
+        setThinking(false);
       }
+      return turn;
     };
   });
+
+  /** Keep the mic open after Cosmo speaks, longer when it asked something or during an alert. */
+  const afterTurn = (last: Turn) => {
+    if (demoOn.current) return;
+    if (last.sleep) { goToSleep({ chime: true }); return; }
+    const alert = getCtx()?.status === "alert";
+    followUp(alert || last.expect === "yesno" ? 14000 : last.pending ? 10000 : 7000);
+  };
 
   const handle = useCallback(async (text: string) => {
     const c = ctxFor();
     if (!c) return;
-    await playRef.current(respond(text, c), text);
+    begin();
+    try {
+      const last = await playRef.current(respond(text, c), text);
+      afterTurn(last);
+    } finally { setThinking(false); end(); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** Push to talk: listen once, then answer. */
-  const talk = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    const heard = await listen();
-    if (heard) { add("astronaut", heard); await handle(heard); }
-    setBusy(false);
-  }, [busy, handle]);
+  /** Words from the astronaut (heard by the recognizer, tapped, or typed by the presenter). */
+  const heard = useCallback(async (text: string) => {
+    if (demoOn.current || busyN.current) { setThinking(false); return; }
+    add("astronaut", text);
+    await handle(text);
+  }, [handle]);
 
-  /** Cosmo speaks first (proactive alert), and remembers what it asked. */
-  const announce = useCallback(async (lines: string[], pending: Pending) => {
-    mem.current.pending = pending;
-    await say(lines);
-  }, [say]);
+  useEffect(() => {
+    setCommandHandler((text) => { void heard(text); });
+    return () => setCommandHandler(null);
+  }, [heard]);
+
+  // turn "Hey Cosmo" on by default (Chrome asks for the microphone once)
+  useEffect(() => {
+    if (!wakePreference()) return;
+    const id = window.setTimeout(() => { void enableWake(); }, 900);
+    return () => window.clearTimeout(id);
+  }, []);
+
+  /** The orb: tap to wake Cosmo (or to interrupt it), tap again to send it back to sleep. */
+  const talk = useCallback(async () => {
+    const v = getVoiceState();
+    if (v.speaking && !demoOn.current) { stopSpeaking(); return; }
+    if (v.wake === "off" || v.wake === "starting") {
+      const ok = await enableWake();
+      if (ok) wakeUp();
+      return;
+    }
+    if (v.wake === "awake") goToSleep({ chime: true });
+    else wakeUp();
+  }, []);
+
+  /** Cosmo speaks first (proactive alert or check-in) and remembers what it asked. */
+  const announce = useCallback(async (turn: Turn) => {
+    if (busyN.current) return;
+    begin();
+    try {
+      const last = await playRef.current(turn, "");
+      afterTurn(last);
+    } finally { end(); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Pick the most important check-in for right now, if any. */
+  const checkIn = useCallback(async (o?: Observation) => {
+    const live = getCtx();
+    if (!live) return;
+    const obs = o ?? observe(live.devs, live.history, live.conditions)[0];
+    if (!obs) return;
+    await announce({ intent: `check-in-${obs.id}`, say: obs.say, actions: [{ type: "log", text: `Cosmo checked in: ${obs.id}.`, severity: "info" }], pending: obs.pending, expect: "yesno" });
+  }, [getCtx, announce]);
 
   /** Play a scripted conversation: the astronaut and crewmate lines are voiced, and Cosmo answers live. */
-  const playDemo = useCallback(async (id: keyof typeof DEMOS) => {
-    if (busy) return;
-    setBusy(true);
+  const playDemo = useCallback(async (id: DemoId) => {
+    if (busyN.current) return;
+    begin();
+    demoOn.current = true;
     stopDemo.current = false;
     setDemo(DEMOS[id].title);
-    mem.current = { pending: null, jokeIndex: mem.current.jokeIndex, scanStep: -1 };
-    for (const line of DEMOS[id].lines) {
-      if (stopDemo.current) break;
-      add(line.who, line.text);
-      await speak(line.text, line.who);
-      await wait(250);
-      await handle(line.text);
-      await wait(500);
+    goToSleep();
+    mem.current = { ...mem.current, pending: null, lastIntent: undefined };
+    try {
+      for (const step of DEMOS[id].steps) {
+        if (stopDemo.current) break;
+        if ("do" in step) {
+          if (step.do === "phase") run({ type: "phase", phase: step.phase });
+          if (step.do === "ff") { setSpeed(25); await wait((step.seconds / 25) * 1000); setSpeed(1); }
+          if (step.do === "check-in" || step.do === "alert") {
+            // keep the simulation running fast until the readings really cross the line (max ~8 s)
+            let t: Turn | null = null;
+            for (let i = 0; i < 16 && !t && !stopDemo.current; i++) {
+              const live = getCtx();
+              if (live) {
+                const major = live.conditions.find((c) => c.severity === "major");
+                const obs = observe(live.devs, live.history, live.conditions)[0];
+                if (step.do === "alert" && major) t = majorAlert(major);
+                if (step.do === "check-in" && obs) t = { intent: `check-in-${obs.id}`, say: obs.say, actions: [{ type: "log", text: `Cosmo checked in: ${obs.id}.`, severity: "info" }], pending: obs.pending, expect: "yesno" };
+              }
+              if (!t) { setSpeed(25); await wait(500); }
+            }
+            setSpeed(1);
+            if (t) await playRef.current(t, "");
+            await wait(400);
+          }
+          continue;
+        }
+        add(step.who, step.text);
+        await speak(step.text, step.who);
+        await wait(250);
+        const c = ctxFor();
+        if (c) await playRef.current(respond(step.text, c), step.text);
+        await wait(450);
+      }
+    } finally {
+      demoOn.current = false;
+      setDemo(null);
+      setExpect(undefined);
+      end();
     }
-    setDemo(null);
-    setBusy(false);
-  }, [busy, handle]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const cancelDemo = () => { stopDemo.current = true; };
-  const reset = () => { mem.current = { pending: null, jokeIndex: mem.current.jokeIndex, scanStep: -1 }; };
+  const cancelDemo = () => { stopDemo.current = true; stopSpeaking(); };
+  const reset = () => { mem.current = { ...mem.current, pending: null, lastIntent: undefined }; setExpect(undefined); };
+  const pendingNow = () => mem.current.pending;
+  const idleFor = () => (busyN.current ? 0 : Date.now() - mem.current.lastTurnAt);
 
-  return { transcript, busy, engine, demo, talk, handle, say, announce, playDemo, cancelDemo, reset };
+  return { transcript, busy, engine, demo, expect, talk, handle, heard, say, announce, checkIn, playDemo, cancelDemo, reset, pendingNow, idleFor };
 }

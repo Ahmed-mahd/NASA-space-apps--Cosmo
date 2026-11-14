@@ -38,6 +38,13 @@ Next (Phase 1 close → Phase 2): `src/lib/stream.ts`, `src/lib/baseline.ts`, vi
 - Rules draft in `lib/conditions.ts` still needs Checkpoint C review. Presenter: Shift+P (scenarios, speed, typed backup line).
 - No model key set yet: the brain runs fully on board ("on-board scripted").
 
+## State (Sat, voice update)
+- "Hey Cosmo" wake word: `lib/voice.ts` runs Chrome speech recognition continuously, wakes on the phrase (`lib/wake.ts`, loose match for cosmos/kosmo/cozmo), keeps listening 7-14 s after each answer, pauses while anything is spoken. Orb (`VoiceOrb.tsx`) follows the live mic spectrum; text box (`VoicePanel.tsx`) is separate and has yes/no tap buttons as a fallback.
+- Brain rewrite (`lib/brain.ts`): ~60 intents; feelings are explored before suggesting (cause -> how long -> what helps -> plan, details never logged); crisis path; chest pain; generic emergency triage; yes/no-only questions when the astronaut is alone (`ALONE_CHECKS` in `conditions.ts`).
+- Proactive check-ins: `lib/watch.ts` (deviation from personal normal + 90-s oxygen trend forecast); cooldowns in `DeviceOS.tsx`. New scenario phase "stress". Four demo conversations.
+- Tests: `npm test` (node:test + jiti, 141 cases in `src/lib/brain.test.ts`). vitest could not be downloaded here.
+- Checkpoint C now also covers R-MIND-01, R-MIND-02, R-CHEST-01 and the yes/no question lists.
+
 ## Answers from Ahmed (Fri 20:35)
 - **Scenario 1 is the mild-hypoxia story.** The astronaut reports fatigue and headache; SpO2 drifts below their personal baseline; Cosmo asks follow-ups, runs an approved check, reassesses. Source: NASA hypoxia risk page (symptoms: confusion, headache, vision problems, trouble sleeping).
 - **Nobody on the team is medically trained.** So: keep the rule file small and conservative, use only widely published reference ranges, show "example protocol, needs medical review" on every rule and in the "Why did Cosmo say that?" panel, never name a drug or dose, and say this limit plainly in the README. Suggest Ahmed ask a hackathon mentor to look over the rule file at Checkpoint C.

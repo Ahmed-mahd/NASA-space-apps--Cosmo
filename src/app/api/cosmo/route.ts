@@ -44,8 +44,10 @@ export async function POST(req: Request) {
   const fallback = { lines: body.draft, engine: "on-board scripted" };
   if (!base || !model) return Response.json(fallback);
 
-  // jokes and scripted scan steps are spoken exactly as written
-  if (body.intent === "joke" || body.intent === "scan") return Response.json({ ...fallback, engine: model });
+  // spoken exactly as written: jokes, scan steps, and anything urgent (yes/no questions,
+  // crisis support, emergencies), where a reworded question could change the answer
+  const EXACT = /^(joke|scan|crisis|yesno|crewmate|emergency|chest-pain|cant-breathe|faint|injury|major-alert)/;
+  if (EXACT.test(body.intent) || body.status === "alert") return Response.json({ ...fallback, engine: model });
 
   const user = [
     `STATUS: ${body.status}`,

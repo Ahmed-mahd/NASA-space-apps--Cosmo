@@ -5,19 +5,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import mmash from "@/data/clips/mmash-user22.json";
 import type { MoodId } from "@/data/mind";
 import type { RegionId } from "@/data/regions";
-import { proactiveLine, type Action } from "@/lib/brain";
-import { crewStatus, evaluate, regionSeverity } from "@/lib/conditions";
+import { majorAlert, type Action, type RequestKind } from "@/lib/brain";
+import { crewStatus, evaluate, regionSeverity, type Report } from "@/lib/conditions";
 import { PHASES } from "@/lib/stream";
 import { useConversation, type LiveContext } from "@/lib/useConversation";
 import { useVitals } from "@/lib/useVitals";
 import type { VitalKey } from "@/lib/vitals";
+import { getVoiceState } from "@/lib/voice";
+import { observe } from "@/lib/watch";
 import { LabsView, LinkView, RadiationView, TrendsView, type LogEntry } from "./DeviceViews";
 import GeneralColumn from "./GeneralColumn";
 import type { Activity } from "./MindDeck";
 import RegionBrief from "./RegionBrief";
 import ScanCard from "./ScanCard";
 import SensorColumn from "./SensorColumn";
-import VoiceDock from "./VoiceDock";
+import VoiceOrb from "./VoiceOrb";
+import VoicePanel from "./VoicePanel";
 
 const HoloBody = dynamic(() => import("./HoloBody"), {
   ssr: false,
@@ -37,6 +40,18 @@ const TABS: { id: Tab; label: string }[] = [
 // steps walked between 09:15 and 10:00, before the live clip starts
 const STEPS_BEFORE = mmash.history.steps.slice(0, 45).reduce((a, b) => a + b, 0);
 
+const REQUESTS: Record<RequestKind, { text: string; severity: "info" | "major" }> = {
+  "family-call": { text: "Request queued: private family conference at the next communication window.", severity: "info" },
+  "psych-conference": { text: "Request queued: private psychological conference (confidential).", severity: "info" },
+  "psych-urgent": { text: "URGENT: private conference with the flight surgeon requested now.", severity: "major" },
+  "crew-company": { text: "Crewmate asked to check in (no details shared).", severity: "info" },
+  exercise: { text: "Timeline: 30-minute exercise session added.", severity: "info" },
+  quiet: { text: "Non-urgent messages held for 20 minutes.", severity: "info" },
+  rest: { text: "Timeline: 30 quiet minutes blocked.", severity: "info" },
+};
+/** Proactive check-ins: never twice for the same thing within 3 minutes, never more than one every 40 s. */
+const CHECK_COOLDOWN = 180_000, CHECK_GAP = 40_000, QUIET_AFTER_TALK = 15_000, SETTLE = 25_000;
+
 export default function DeviceOS({ onExit }: { onExit?: () => void }) {
   const { state, speed, setSpeed, paused, setPaused, phase, setPhase } = useVitals();
   const [tab, setTab] = useState<Tab>("body");
@@ -49,16 +64,19 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
   const [crewmate, setCrewmate] = useState(false);
   const [scanStep, setScanStep] = useState(-1);
   const [mindReq, setMindReq] = useState<{ activity: Activity; nonce: number } | null>(null);
+  const [reports, setReports] = useState<Report[]>([]);
+  const [journal, setJournal] = useState<string[]>(["Grew the first lettuce leaves in the veggie unit."]);
 
-  const conditions = useMemo(() => (state ? evaluate(state.deviations, phase) : []), [state, phase]);
+  const conditions = useMemo(() => (state ? evaluate(state.deviations, phase, reports) : []), [state, phase, reports]);
   const status = crewStatus(conditions);
   const severity = useMemo(() => regionSeverity(conditions), [conditions]);
   const labels = useMemo(() => Object.fromEntries(conditions.map((c) => [c.region, c.short.split(",")[0]])) as Partial<Record<RegionId, string>>, [conditions]);
 
   /* ---------- conversation wiring ---------- */
   const live = useRef<LiveContext | null>(null);
+  const stepsToday = STEPS_BEFORE + Math.round(state?.stepsLive ?? 0);
   useEffect(() => {
-    live.current = state ? { devs: state.deviations, conditions, status, phase } : null;
+    live.current = state ? { devs: state.deviations, conditions, status, phase, history: state.history, clock: state.reading.clock, stepsToday } : null;
   });
   const clock = useRef("--:--:--");
   useEffect(() => { if (state) clock.current = state.reading.clock; });
@@ -71,6 +89,11 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
       case "phase": setPhase(a.phase); if (a.phase !== "flank-pain") { setScanStep(-1); } if (a.phase === "normal") setCrewmate(false); break;
       case "openRegion": setTab("body"); setRegion(a.region); break;
       case "tab": setTab(a.tab); break;
+      case "focus": setFocus(a.vital); setTab("trends"); break;
+      case "report": setReports((r) => (r.some((x) => x.kind === a.kind) ? r : [...r, { kind: a.kind, at: clock.current }])); break;
+      case "clearReport": setReports((r) => r.filter((x) => x.kind !== a.kind)); break;
+      case "request": addLog(REQUESTS[a.what].text, REQUESTS[a.what].severity); break;
+      case "journal": setJournal((j) => [a.text, ...j]); break;
       case "mind": setTab("mind"); setMindReq({ activity: a.activity, nonce: Date.now() }); break;
       case "mood": setMood(a.mood); break;
       case "log": addLog(a.text, a.severity); break;
@@ -107,10 +130,31 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
   const announced = useRef<string | null>(null);
   useEffect(() => {
     if (!major) { announced.current = null; return; }
-    if (announced.current === major.id || convo.busy) return;
+    if (announced.current === major.id || convo.busy || convo.demo) return;
     announced.current = major.id;
-    convo.announce([proactiveLine(major)], "crewmate");
+    // the conversation already raised it (pain score, chest pain, "I can't breathe"): don't ask twice
+    const p = convo.pendingNow();
+    if (p && ["crewmate", "yesno", "scan", "crew-o2"].includes(p.kind)) return;
+    convo.announce(majorAlert(major));
   }, [major, convo]);
+
+  // proactive check-ins: a reading drifts from this astronaut's normal, Cosmo asks first
+  const checks = useRef<{ mounted: number; last: number; by: Record<string, number> }>({ mounted: 0, last: 0, by: {} });
+  useEffect(() => {
+    if (!state) return;
+    const ck = checks.current, now = Date.now();
+    if (!ck.mounted) ck.mounted = now;
+    if (now - ck.mounted < SETTLE || now - ck.last < CHECK_GAP) return;
+    if (major || convo.busy || convo.demo || convo.pendingNow() || convo.idleFor() < QUIET_AFTER_TALK) return;
+    const v = getVoiceState();
+    if (v.speaking || v.listening || v.thinking || v.wake === "awake") return;
+    const obs = observe(state.deviations, state.history, conditions).find((o) => now - (ck.by[o.id] ?? 0) > CHECK_COOLDOWN);
+    if (!obs) return;
+    ck.last = now;
+    ck.by[obs.id] = now;
+    if (obs.id === "o2-trend") ck.by.o2 = now;
+    void convo.checkIn(obs);
+  }, [state, conditions, major, convo]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -166,6 +210,7 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
                 )}
               </div>
               <p className="pointer-events-none absolute left-2 top-1 text-[11px] text-ink/45">Drag to turn · tap a body area for its brief</p>
+              <p className="pointer-events-none absolute bottom-1 left-2 max-w-[60%] text-[10px] text-ink/40">Simulation: replayed research data and simulated readings. Example protocols, need medical review.</p>
               {sidePanel && (
                 <div className="dev-scroll absolute inset-y-0 right-0 z-30 w-full max-w-[380px] overflow-y-auto py-1">
                   {sidePanel === "scan"
@@ -177,8 +222,9 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
           )}
           {state && tab === "trends" && <TrendsView state={state} focus={focus} onFocus={setFocus} />}
           {state && tab === "mind" && (
-            <MindDeck request={mindReq} mood={mood} status={status}
-              onMood={(m) => { setMood(m); addLog(`Mood check-in: ${m}.`, "info"); }}
+            <MindDeck request={mindReq} mood={mood} status={status} journal={journal}
+              onJournal={(t) => setJournal((j) => [t, ...j])}
+              onCheckIn={() => convo.announce({ intent: "check-in", say: ["How are you feeling right now?"], actions: [], pending: { kind: "how-are-you" }, expect: "open" })}
               stress={state.deviations.stress.value} hrv={state.deviations.hrv.value} />
           )}
           {tab === "radiation" && <RadiationView />}
@@ -191,13 +237,13 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
         </main>
 
         <div className="dev-scroll hidden min-h-0 overflow-y-auto pr-0.5 lg:block">
-          <GeneralColumn status={status} conditions={conditions} stepsToday={STEPS_BEFORE + Math.round(state?.stepsLive ?? 0)} onOpenRegion={(r) => { setTab("body"); setRegion(r); }} />
+          <GeneralColumn status={status} conditions={conditions} stepsToday={stepsToday} onOpenRegion={(r) => { setTab("body"); setRegion(r); }} />
         </div>
       </div>
 
       {/* dock */}
-      <footer className="grid items-center gap-3 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
-        <nav aria-label="Device screens" className="dev-panel flex gap-1 overflow-x-auto p-1.5">
+      <footer className="grid grid-cols-[auto_minmax(0,1fr)] items-end gap-x-3 gap-y-2 lg:grid-cols-[minmax(0,0.9fr)_auto_minmax(0,1.1fr)]">
+        <nav aria-label="Device screens" className="dev-panel col-span-2 flex gap-1 overflow-x-auto p-1.5 lg:order-none lg:col-span-1 order-last self-center">
           {TABS.map((t) => (
             <button key={t.id} type="button" onClick={() => setTab(t.id)} aria-current={tab === t.id ? "page" : undefined}
               className={`flex-1 whitespace-nowrap rounded-lg px-3 py-2 text-[13px] transition ${tab === t.id ? "bg-holo text-void shadow-[0_0_18px_rgba(46,230,255,.4)]" : "text-ink/75 hover:bg-white/5"}`}>
@@ -205,13 +251,10 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
             </button>
           ))}
         </nav>
-        <VoiceDock engine={convo.engine} busy={convo.busy} demo={convo.demo} transcript={convo.transcript} alert={status === "alert"}
-          onTalk={convo.talk} onDemo={(id) => convo.playDemo(id)} onCancelDemo={convo.cancelDemo} />
+        <div className="lg:-mt-10"><VoiceOrb size={112} alert={status === "alert"} onTap={convo.talk} /></div>
+        <VoicePanel engine={convo.engine} busy={convo.busy} demo={convo.demo} expect={convo.expect} transcript={convo.transcript} alert={status === "alert"}
+          onDemo={(id) => convo.playDemo(id)} onCancelDemo={convo.cancelDemo} onAnswer={(t) => void convo.heard(t)} />
       </footer>
-
-      <p className="pointer-events-none absolute bottom-[4.7rem] left-1/2 hidden -translate-x-1/2 text-[10px] text-ink/40 lg:block">
-        Simulation · replayed research data and simulated readings · example protocols, need medical review
-      </p>
 
       {presenter && (
         <div className="fixed bottom-24 right-4 z-50 w-72 rounded-xl border border-amber/50 bg-deep/95 p-3 text-xs shadow-2xl" role="dialog" aria-label="Presenter controls">
@@ -222,7 +265,7 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
           <p className="mt-2 text-ink/60">Scenario</p>
           <div className="mt-1 grid grid-cols-2 gap-1.5">
             {PHASES.map((p) => (
-              <button key={p.id} onClick={() => { setPhase(p.id); convo.reset(); if (p.id === "normal") { setScanStep(-1); setCrewmate(false); } }} className={`rounded px-2 py-1.5 ${phase === p.id ? "bg-amber text-void" : "border border-amber/40 text-ink"}`}>{p.label}</button>
+              <button key={p.id} onClick={() => { setPhase(p.id); convo.reset(); if (p.id === "normal") { setScanStep(-1); setCrewmate(false); setReports([]); } }} className={`rounded px-2 py-1.5 ${phase === p.id ? "bg-amber text-void" : "border border-amber/40 text-ink"}`}>{p.label}</button>
             ))}
           </div>
           <p className="mt-2 text-ink/60">Speed</p>
@@ -232,9 +275,9 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
             ))}
             <button onClick={() => setPaused(!paused)} className="flex-1 rounded border border-amber/40 px-2 py-1 text-ink">{paused ? "Play" : "Pause"}</button>
           </div>
-          <form className="mt-2" onSubmit={(e) => { e.preventDefault(); const f = e.currentTarget.elements.namedItem("say") as HTMLInputElement; if (f.value.trim()) { convo.handle(f.value.trim()); f.value = ""; } }}>
+          <form className="mt-2" onSubmit={(e) => { e.preventDefault(); const f = e.currentTarget.elements.namedItem("say") as HTMLInputElement; if (f.value.trim()) { void convo.heard(f.value.trim()); f.value = ""; } }}>
             <label className="text-ink/60" htmlFor="say">Say as the astronaut (backup if the mic fails)</label>
-            <input id="say" name="say" className="mt-1 w-full rounded border border-amber/40 bg-void px-2 py-1 text-ink" placeholder="I have a headache" />
+            <input id="say" name="say" className="mt-1 w-full rounded border border-amber/40 bg-void px-2 py-1 text-ink" placeholder="I feel lonely" />
           </form>
           {state && <p className="mt-2 text-ink/50">Scenario blend {Math.round(state.reading.blend * 100)}% · brain: {convo.engine}</p>}
         </div>

@@ -1,28 +1,45 @@
 "use client";
 
 /**
- * Voice layer (browser): speech out with speechSynthesis, speech in with the
- * Chrome SpeechRecognition API. A tiny store lets any component react to who is
- * speaking, whether Cosmo is listening, and the live caption.
+ * Voice layer (browser).
+ *
+ * - Speech out: speechSynthesis, one voice per speaker.
+ * - Speech in: Chrome's SpeechRecognition, running continuously while
+ *   "Hey Cosmo" is on. Cosmo sleeps until it hears the wake phrase, listens
+ *   for the command, answers, and then keeps listening for a few seconds so
+ *   the astronaut can reply without saying "Hey Cosmo" again (like a phone
+ *   assistant's follow-up mode).
+ * - Mic level: a WebAudio analyser on the same microphone, so the orb can
+ *   move with the astronaut's voice.
+ *
+ * Recognition pauses while anything is being spoken, so Cosmo never hears
+ * itself (or the demo voices) and wakes up by mistake.
  */
 
 import { useSyncExternalStore } from "react";
+import { parseWake } from "./wake";
 
 export type Speaker = "cosmo" | "astronaut" | "crewmate";
+/** off: wake word disabled. sleeping: waiting for "Hey Cosmo". awake: listening for words. */
+export type WakeState = "off" | "starting" | "sleeping" | "awake";
 
 export interface VoiceState {
   speaking: Speaker | null;
+  /** True while the mic is taking a command or an answer. */
   listening: boolean;
+  /** Cosmo is working out what to say. */
+  thinking: boolean;
+  wake: WakeState;
   /** Live words while listening, or the line being spoken. */
   caption: { who: Speaker; text: string; interim?: boolean } | null;
-  /** Rough loudness 0..1 while speaking, for the orb. */
+  /** Rough loudness 0..1 while speaking (also readable every frame with getLevels). */
   level: number;
   supported: { tts: boolean; stt: boolean };
   error: string | null;
 }
 
 let state: VoiceState = {
-  speaking: null, listening: false, caption: null, level: 0,
+  speaking: null, listening: false, thinking: false, wake: "off", caption: null, level: 0,
   supported: { tts: false, stt: false }, error: null,
 };
 const subs = new Set<() => void>();
@@ -30,6 +47,8 @@ const set = (p: Partial<VoiceState>) => { state = { ...state, ...p }; subs.forEa
 const subscribe = (f: () => void) => { subs.add(f); return () => subs.delete(f); };
 const SERVER: VoiceState = state;
 export const useVoice = () => useSyncExternalStore(subscribe, () => state, () => SERVER);
+export const getVoiceState = () => state;
+export const setThinking = (thinking: boolean) => { if (state.thinking !== thinking) set({ thinking }); };
 
 /* ---------------- speech out ---------------- */
 const PROFILE: Record<Speaker, { pitch: number; rate: number; prefer: RegExp[] }> = {
@@ -45,7 +64,6 @@ function loadVoices() {
 function pick(who: Speaker) {
   const en = voices.filter((v) => v.lang?.toLowerCase().startsWith("en"));
   const used = new Set<string>();
-  // keep the three speakers on different voices where possible
   const order: Speaker[] = ["cosmo", "astronaut", "crewmate"];
   const chosen: Partial<Record<Speaker, SpeechSynthesisVoice>> = {};
   for (const s of order) {
@@ -60,8 +78,7 @@ function pick(who: Speaker) {
 export function initVoice() {
   if (typeof window === "undefined") return;
   const tts = "speechSynthesis" in window;
-  const w = window as unknown as { SpeechRecognition?: unknown; webkitSpeechRecognition?: unknown };
-  const stt = !!(w.SpeechRecognition || w.webkitSpeechRecognition);
+  const stt = !!Rec();
   set({ supported: { tts, stt } });
   if (tts) {
     loadVoices();
@@ -69,13 +86,23 @@ export function initVoice() {
   }
 }
 
+let speakLevel = 0;
 let levelTimer: number | undefined;
+let speakingCount = 0;
+
 /** Speak a line as one of the speakers. Resolves when finished (or skipped). */
 export function speak(text: string, who: Speaker = "cosmo"): Promise<void> {
   return new Promise((resolve) => {
-    set({ caption: { who, text } });
+    set({ caption: { who, text }, thinking: false, listening: false });
+    speakingCount++;
+    pauseRecognition();
+    const end = () => {
+      speakingCount = Math.max(0, speakingCount - 1);
+      if (!speakingCount) resumeRecognitionSoon();
+      resolve();
+    };
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      setTimeout(resolve, Math.min(6000, 600 + text.length * 45));
+      setTimeout(end, Math.min(6000, 600 + text.length * 45));
       return;
     }
     if (!voices.length) loadVoices();
@@ -89,15 +116,16 @@ export function speak(text: string, who: Speaker = "cosmo"): Promise<void> {
       if (done) return;
       done = true;
       window.clearInterval(levelTimer);
+      speakLevel = 0;
       set({ speaking: null, level: 0 });
-      resolve();
+      end();
     };
     u.onstart = () => {
       set({ speaking: who });
       window.clearInterval(levelTimer);
-      levelTimer = window.setInterval(() => set({ level: 0.35 + Math.random() * 0.65 }), 110);
+      levelTimer = window.setInterval(() => { speakLevel = 0.35 + Math.random() * 0.65; set({ level: speakLevel }); }, 110);
     };
-    u.onboundary = () => set({ level: 1 });
+    u.onboundary = () => { speakLevel = 1; };
     u.onend = finish;
     u.onerror = finish;
     window.speechSynthesis.speak(u);
@@ -108,32 +136,272 @@ export function speak(text: string, who: Speaker = "cosmo"): Promise<void> {
 
 export function stopSpeaking() {
   if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel();
-  window.clearInterval(levelTimer);
+  if (typeof window !== "undefined") window.clearInterval(levelTimer);
+  speakLevel = 0;
   set({ speaking: null, level: 0 });
 }
 
 export const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/* ---------------- microphone level (for the orb) ---------------- */
+let micStream: MediaStream | null = null;
+let audioCtx: AudioContext | null = null;
+let analyser: AnalyserNode | null = null;
+let freq: Uint8Array<ArrayBuffer> | null = null;
+let wave: Uint8Array<ArrayBuffer> | null = null;
+const bands = new Float32Array(16);
+
+async function openMic() {
+  if (micStream || typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    audioCtx = new AudioContext();
+    const src = audioCtx.createMediaStreamSource(micStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.72;
+    src.connect(analyser);
+    freq = new Uint8Array(analyser.frequencyBinCount);
+    wave = new Uint8Array(analyser.fftSize);
+  } catch {
+    micStream = null; // the orb falls back to recognizer activity
+  }
+}
+function closeMic() {
+  micStream?.getTracks().forEach((t) => t.stop());
+  audioCtx?.close().catch(() => {});
+  micStream = null; audioCtx = null; analyser = null; freq = null; wave = null;
+}
+
+/** Read every animation frame: mic loudness 0..1, 16 voice bands 0..1, and Cosmo's speaking level. */
+export function getLevels(): { mic: number; bands: Float32Array; speak: number } {
+  let mic = 0;
+  if (analyser && freq && wave) {
+    if (audioCtx?.state === "suspended") audioCtx.resume().catch(() => {});
+    analyser.getByteTimeDomainData(wave);
+    let sum = 0;
+    for (let i = 0; i < wave.length; i++) { const x = (wave[i] - 128) / 128; sum += x * x; }
+    mic = Math.min(1, Math.sqrt(sum / wave.length) * 4.2);
+    analyser.getByteFrequencyData(freq);
+    // voice lives roughly in bins 2..64 at 48 kHz / 512
+    for (let b = 0; b < 16; b++) {
+      let s = 0;
+      for (let k = 0; k < 4; k++) s += freq[2 + b * 4 + k];
+      bands[b] = Math.min(1, s / (4 * 200));
+    }
+  } else {
+    bands.fill(0);
+  }
+  return { mic, bands, speak: speakLevel };
+}
+
 /* ---------------- speech in ---------------- */
-type Rec = {
+type RecResult = ArrayLike<{ transcript: string }> & { isFinal: boolean };
+type RecLike = {
   lang: string; interimResults: boolean; continuous: boolean; maxAlternatives: number;
   start: () => void; stop: () => void; abort: () => void;
-  onresult: ((e: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void) | null;
+  onresult: ((e: { resultIndex: number; results: ArrayLike<RecResult> }) => void) | null;
   onerror: ((e: { error: string }) => void) | null;
   onend: (() => void) | null;
+  onspeechstart?: (() => void) | null;
 };
-let rec: Rec | null = null;
+type RecCtor = new () => RecLike;
+const Rec = (): RecCtor | undefined => {
+  if (typeof window === "undefined") return undefined;
+  const w = window as unknown as { SpeechRecognition?: RecCtor; webkitSpeechRecognition?: RecCtor };
+  return w.SpeechRecognition || w.webkitSpeechRecognition;
+};
 
-/** Listen for one utterance. Resolves with the final words, or "" if nothing was heard. */
-export function listen(): Promise<string> {
+let wakeOn = false;
+let rec: RecLike | null = null;
+let segStart = 0;
+let awakeTimer: number | undefined;
+let restartTimer: number | undefined;
+let backoff = 250;
+let onCommand: ((text: string) => void) | null = null;
+let capture: ((text: string) => void) | null = null;
+/** Seconds of quiet before Cosmo goes back to sleep. */
+let awakeMs = 8000;
+
+export function setCommandHandler(fn: ((text: string) => void) | null) { onCommand = fn; }
+
+/* small chimes so the astronaut hears Cosmo wake and sleep */
+let chimeCtx: AudioContext | null = null;
+function chime(kind: "wake" | "sleep") {
+  try {
+    chimeCtx ??= new AudioContext();
+    const a = chimeCtx;
+    const notes = kind === "wake" ? [660, 990] : [740, 494];
+    notes.forEach((f, i) => {
+      const o = a.createOscillator(), g = a.createGain(), t0 = a.currentTime + i * 0.09;
+      o.type = "sine"; o.frequency.value = f;
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(0.06, t0 + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+      o.connect(g).connect(a.destination); o.start(t0); o.stop(t0 + 0.25);
+    });
+  } catch { /* no audio, no chime */ }
+}
+
+function armSleep(ms = awakeMs) {
+  if (typeof window === "undefined") return;
+  window.clearTimeout(awakeTimer);
+  awakeTimer = window.setTimeout(() => goToSleep(), ms);
+}
+
+/** Open the conversation: listen for words without the wake phrase. */
+export function wakeUp(opts: { chime?: boolean; ms?: number } = {}) {
+  if (!wakeOn) return;
+  awakeMs = opts.ms ?? 8000;
+  if (opts.chime !== false && state.wake !== "awake") chime("wake");
+  set({ wake: "awake", listening: !speakingCount, error: null, caption: speakingCount ? state.caption : { who: "astronaut", text: "", interim: true } });
+  armSleep();
+  startRecognition();
+}
+
+/** Close the conversation: only "Hey Cosmo" wakes it again. */
+export function goToSleep(opts: { chime?: boolean } = {}) {
+  if (typeof window !== "undefined") window.clearTimeout(awakeTimer);
+  if (capture) { const c = capture; capture = null; c(""); }
+  if (!wakeOn) { set({ listening: false }); return; }
+  if (state.wake === "awake" && opts.chime) chime("sleep");
+  set({ wake: "sleeping", listening: false });
+}
+
+/** After Cosmo answers, keep listening for a reply for a while. */
+export function followUp(ms = 8000) {
+  if (!wakeOn) return;
+  wakeUp({ chime: false, ms });
+}
+
+function dispatch(text: string) {
+  if (typeof window !== "undefined") window.clearTimeout(awakeTimer);
+  set({ listening: false, caption: { who: "astronaut", text } });
+  if (capture) { const c = capture; capture = null; c(text); return; }
+  setThinking(true);
+  onCommand?.(text);
+}
+
+function startRecognition() {
+  const Ctor = Rec();
+  if (!Ctor || !wakeOn || speakingCount || rec) return;
+  const r = new Ctor();
+  rec = r;
+  segStart = 0;
+  r.lang = "en-US";
+  r.interimResults = true;
+  r.continuous = true;
+  r.maxAlternatives = 1;
+  r.onresult = (e) => {
+    backoff = 250;
+    const res = e.results;
+    let text = "";
+    for (let i = segStart; i < res.length; i++) text += res[i][0].transcript;
+    const final = res.length > 0 && res[res.length - 1].isFinal;
+    const endSeg = () => { segStart = res.length; };
+    if (speakingCount) { if (final) endSeg(); return; }
+
+    if (state.wake !== "awake" && !capture) {
+      const w = parseWake(text);
+      if (!w.woke) { if (final) endSeg(); return; }
+      wakeUp();
+      set({ caption: { who: "astronaut", text: w.command, interim: !final } });
+      if (final) { endSeg(); if (w.command) dispatch(w.command); }
+      return;
+    }
+    // awake (or capturing an answer): every word counts, a repeated wake phrase is dropped
+    const w = parseWake(text);
+    const cmd = (w.woke ? w.command : text).trim();
+    set({ listening: true, caption: { who: "astronaut", text: cmd, interim: !final } });
+    armSleep(Math.max(awakeMs, 5000));
+    if (final) { endSeg(); if (cmd) dispatch(cmd); }
+  };
+  r.onerror = (e) => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      set({ error: "Microphone blocked. Allow it in Chrome's address bar, then tap the orb." });
+      disableWake(false);
+    } else if (e.error === "network") {
+      backoff = Math.min(8000, backoff * 2);
+      set({ error: "Speech service unreachable. Retrying…" });
+    } else if (e.error === "audio-capture") {
+      set({ error: "No microphone found." });
+    }
+  };
+  r.onend = () => {
+    rec = null;
+    if (wakeOn && !speakingCount) {
+      window.clearTimeout(restartTimer);
+      restartTimer = window.setTimeout(startRecognition, backoff);
+    }
+  };
+  try {
+    r.start();
+    if (state.wake === "starting") set({ wake: "sleeping" });
+    if (state.error?.startsWith("Speech service")) set({ error: null });
+  } catch {
+    rec = null;
+  }
+}
+
+function pauseRecognition() {
+  if (typeof window !== "undefined") window.clearTimeout(restartTimer);
+  const r = rec;
+  rec = null;
+  if (r) { r.onend = null; r.onresult = null; try { r.abort(); } catch { /* already stopped */ } }
+}
+function resumeRecognitionSoon() {
+  if (!wakeOn || typeof window === "undefined") return;
+  window.clearTimeout(restartTimer);
+  restartTimer = window.setTimeout(startRecognition, 300);
+}
+
+/** Turn on "Hey Cosmo". Asks for the microphone the first time. */
+export async function enableWake(): Promise<boolean> {
+  if (!Rec()) { set({ error: "Voice input needs Chrome. Use the presenter controls instead." }); return false; }
+  if (wakeOn) return true;
+  wakeOn = true;
+  set({ wake: "starting", error: null });
+  try { localStorage.setItem("cosmo.wake", "on"); } catch { /* private mode */ }
+  await openMic();
+  if (!wakeOn) return false;
+  set({ wake: "sleeping" });
+  startRecognition();
+  return true;
+}
+
+/** Turn "Hey Cosmo" off. `remember` is false when the browser refused the mic (try again next visit). */
+export function disableWake(remember = true) {
+  wakeOn = false;
+  capture?.("");
+  capture = null;
+  pauseRecognition();
+  closeMic();
+  if (typeof window !== "undefined") window.clearTimeout(awakeTimer);
+  if (remember) try { localStorage.setItem("cosmo.wake", "off"); } catch { /* private mode */ }
+  set({ wake: "off", listening: false });
+}
+
+export const wakePreference = () => {
+  try { return localStorage.getItem("cosmo.wake") !== "off"; } catch { return true; }
+};
+
+/**
+ * Listen for one answer (used by the Mind activities). With "Hey Cosmo" on,
+ * it reuses the running recognizer; otherwise it runs a single-shot one.
+ */
+export function listen(ms = 9000): Promise<string> {
+  if (wakeOn) {
+    return new Promise((resolve) => {
+      capture?.("");
+      capture = resolve;
+      wakeUp({ chime: false, ms });
+    });
+  }
   return new Promise((resolve) => {
-    const w = window as unknown as { SpeechRecognition?: new () => Rec; webkitSpeechRecognition?: new () => Rec };
-    const Ctor = w.SpeechRecognition || w.webkitSpeechRecognition;
+    const Ctor = Rec();
     if (!Ctor) { set({ error: "Voice input needs Chrome. Use the presenter controls instead." }); resolve(""); return; }
     stopSpeaking();
-    rec?.abort();
     const r = new Ctor();
-    rec = r;
     r.lang = "en-US";
     r.interimResults = true;
     r.continuous = false;
@@ -152,10 +420,14 @@ export function listen(): Promise<string> {
       const msg = e.error === "not-allowed" ? "Microphone blocked. Allow it in Chrome's address bar." : e.error === "no-speech" ? null : `Voice input error: ${e.error}`;
       set({ error: msg });
     };
-    r.onend = () => { set({ listening: false }); rec = null; resolve(final.trim()); };
+    r.onend = () => { set({ listening: false }); resolve(stripLead(final)); };
     set({ listening: true, error: null, caption: { who: "astronaut", text: "", interim: true } });
     try { r.start(); } catch { set({ listening: false }); resolve(""); }
   });
 }
+const stripLead = (s: string) => { const w = parseWake(s); return (w.woke ? w.command : s).trim(); };
 
-export function stopListening() { rec?.stop(); }
+export function stopListening() {
+  if (wakeOn) goToSleep();
+  else set({ listening: false });
+}
