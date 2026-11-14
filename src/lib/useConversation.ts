@@ -203,7 +203,8 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
         let filler: Promise<void> | null = null;
         const fillerTimer = route === "agent" ? window.setTimeout(() => {
           const words = ["Hmm, let me think.", "Good question.", "Mm, one sec.", "Let me think about that."];
-          filler = speak(words[(history.current.length + utterance.length) % words.length], "cosmo");
+          // still thinking after the filler: keep showing it, so nobody mistakes the pause for Cosmo's turn ending
+          filler = speak(words[(history.current.length + utterance.length) % words.length], "cosmo").then(() => setThinking(true));
         }, 1600) : undefined;
         try {
           const res = await fetch("/api/cosmo", {
@@ -304,7 +305,7 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
   const heard = useCallback(async (text: string) => {
     if (demoOn.current) { setThinking(false); return; }
     // Cosmo is still finishing a turn (it was just interrupted): wait for it instead of dropping the words
-    for (let i = 0; i < 40 && busyN.current; i++) await wait(100);
+    for (let i = 0; i < 150 && busyN.current; i++) await wait(100);
     if (busyN.current) { setThinking(false); return; }
     add("astronaut", text);
     await handle(text);
