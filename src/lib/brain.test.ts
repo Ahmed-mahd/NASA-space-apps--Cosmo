@@ -441,3 +441,83 @@ describe("wording rules", () => {
     assert.doesNotMatch(said, /\b(mg|milligram|ibuprofen|paracetamol|acetaminophen|aspirin|tablet|pill|dose of)\b/i);
   });
 });
+
+/* ================= round 3: agent, memory, blood sugar ================= */
+import { applyLearn, bestHelper, emptyMemory, learnFromWords, recall } from "./memory";
+import { interpret } from "./brain";
+import { ALONE_CHECKS, glucoseRule } from "./conditions";
+
+describe("answers in sentences, not just yes or no", () => {
+  const exercising = ALONE_CHECKS["fast-heart"][2];
+  const cases: [string, "yes" | "no"][] = [
+    ["no, I was just sitting, finishing up some work", "no"],
+    ["I was just sitting finishing up some work", "no"],
+    ["I was at my desk", "no"],
+    ["yeah I was on the treadmill", "yes"],
+    ["I just finished a workout", "yes"],
+  ];
+  for (const [t, a] of cases) it(`"${t}" -> ${a}`, () => assert.equal(interpret(exercising, t), a));
+  it("explanations are acknowledged, never told 'yes or no is enough'", () => {
+    const s = session({ pending: { kind: "yesno", cond: "fast-heart", i: 2, tries: 0 } });
+    const t = s.say("no, I was just sitting, finishing up some work")[0];
+    assert.match(t.say.join(" "), /^Thanks for telling me/);
+    assert.doesNotMatch(t.say.join(" "), /yes or no/i);
+  });
+  it("two unclear answers: noted as unsure, moves on", () => {
+    const s = session({ pending: { kind: "yesno", cond: "fast-heart", i: 0, tries: 0 } });
+    assert.deepEqual(s.run(["purple", "banana"]), ["yesno-unclear", "yesno"]);
+  });
+});
+
+describe("memory learns from what the astronaut says and does", () => {
+  it("picks out names, family and events", () => {
+    const l = learnFromWords("my daughter Lina had her birthday today and I missed it");
+    assert.ok(l.some((x) => x.kind === "person" && x.name === "Lina"));
+    assert.ok(l.some((x) => x.kind === "fact" && /Lina.*birthday/.test(x.text)));
+    assert.ok(learnFromWords("call me Ahmed").some((x) => x.kind === "name" && x.name === "Ahmed"));
+    assert.ok(learnFromWords("I really love chess").some((x) => x.kind === "fact" && x.text === "Enjoys chess"));
+  });
+  it("what helped once is suggested again when they don't know", () => {
+    const memory = applyLearn(emptyMemory(), [{ kind: "helped", plan: "family-call" }, { kind: "declined", plan: "family-call" }]);
+    assert.equal(bestHelper(memory), "family-call");
+    const s = session({ pending: { kind: "explore", feeling: "sad", stage: "helps" } });
+    const t = respond("I don't know", { ...s.ctx(), memory });
+    assert.match(t.say.join(" "), /Last time, a call with your family helped/);
+  });
+  it("recalls in second person and forgets on request", () => {
+    const memory = applyLearn(emptyMemory(), [{ kind: "name", name: "Ahmed" }, { kind: "person", relation: "daughter", name: "Lina" }, { kind: "topic", topic: "work" }]);
+    assert.deepEqual(recall(memory).slice(0, 2), ["Your name is Ahmed.", "Your daughter is Lina."]);
+    const t = respond("what do you remember about me", { ...session().ctx(), memory });
+    assert.match(t.say.join(" "), /Your name is Ahmed/);
+    assert.ok(respond("forget everything", session().ctx()).learn?.some((l) => l.kind === "forget"));
+  });
+  it("greets by name", () => {
+    const memory = applyLearn(emptyMemory(), [{ kind: "name", name: "Ahmed" }]);
+    assert.match(respond("hello", { ...session().ctx(), memory }).say[0], /^Hi Ahmed!/);
+  });
+});
+
+describe("blood sugar", () => {
+  it("answers the question and offers a guided check", () => {
+    const s = session();
+    assert.deepEqual(s.run(["what's my blood sugar", "yes", "it says 112"]), ["vital-glucose", "glucose-check", "glucose-result"]);
+  });
+  it("example protocol thresholds", () => {
+    assert.equal(glucoseRule(50).severity, "major");
+    assert.equal(glucoseRule(65).severity, "minor");
+    assert.equal(glucoseRule(95).severity, "ok");
+    assert.equal(glucoseRule(200).severity, "minor");
+    assert.equal(glucoseRule(300).severity, "major");
+    assert.doesNotMatch(glucoseRule(50).say.join(" "), /insulin|glucose tablet|\d+ ?g\b|mg\b/i);
+  });
+});
+
+describe("questions about space health", () => {
+  for (const q of ["why do astronauts lose bone in space", "what is SANS", "tell me about radiation", "how does sleep work up here"]) {
+    it(`"${q}" gets a NASA-based answer`, () => assert.equal(session().say(q)[0].intent, "knowledge"));
+  }
+  it("anything unscripted is handed to the AI agent", () => {
+    const t = session().say("what's your favourite planet and why")[0];
+    assert.equal(t.agent, true);
+  });
+});

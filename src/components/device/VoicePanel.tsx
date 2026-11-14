@@ -22,10 +22,13 @@ interface Props {
   onCancelDemo: () => void;
   /** Tap fallback for yes/no answers. */
   onAnswer: (text: string) => void;
+  /** What Cosmo has learned about the astronaut, in plain sentences. */
+  remembers: string[];
+  onForget: () => void;
 }
 
 /** The conversation text box: what Cosmo is doing, live captions, answer hints and the transcript. */
-export default function VoicePanel({ engine, busy, demo, expect, transcript, alert, onDemo, onCancelDemo, onAnswer }: Props) {
+export default function VoicePanel({ engine, busy, demo, expect, transcript, alert, onDemo, onCancelDemo, onAnswer, remembers, onForget }: Props) {
   const v = useVoice();
   const [log, setLog] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -104,6 +107,14 @@ export default function VoicePanel({ engine, busy, demo, expect, transcript, ale
               <li key={i}><b style={{ color: WHO[l.who].color }}>{WHO[l.who].label}: </b>{l.text}</li>
             ))}
           </ol>
+          <div className="mt-4 flex items-center justify-between border-t border-holo/15 pt-3">
+            <p className="dev-title">What Cosmo remembers about you</p>
+            {remembers.length > 0 && <button type="button" onClick={onForget} className="text-[11px] text-alert hover:underline">Forget everything</button>}
+          </div>
+          <ul className="mt-2 space-y-1 text-[13px] text-ink/80">
+            {remembers.length === 0 && <li className="text-ink/55">Nothing yet. It learns from what you tell it. Kept on this device only.</li>}
+            {remembers.map((r, i) => <li key={i}>{r}</li>)}
+          </ul>
         </div>
       )}
     </div>

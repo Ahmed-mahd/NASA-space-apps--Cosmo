@@ -20,7 +20,7 @@ import osd from "@/data/clips/osd575.json";
 import type { RegionId } from "@/data/regions";
 import type { Deviation } from "./baseline";
 import { ALONE_CHECKS, glucoseRule, type Condition, type CrewStatus, type ReportKind, type YesNoCheck } from "./conditions";
-import { bestHelper, describe as describeMemory, planWords, type AstroMemory, type Learn } from "./memory";
+import { bestHelper, planWords, recall, type AstroMemory, type Learn } from "./memory";
 import type { StreamPhase } from "./stream";
 import type { VitalKey } from "./vitals";
 import { stripWake } from "./wake";
@@ -241,7 +241,7 @@ function vitalAnswer(t: string, c: BrainContext): Turn | null {
   }
   if (/\bsteps\b|how (much|far) (have i|did i) (walk|move)|how active/.test(t))
     return T("vital-steps", [`You're at about ${c.stepsToday != null ? c.stepsToday.toLocaleString("en-US") : "a few thousand"} steps today. Your exercise block will do most of the work.`]);
-  if (/radiation|\bdose\b|sievert|\bmsv\b/.test(t))
+  if (/my radiation|radiation (dose|level|reading)|\bdose\b|sievert|\bmsv\b|how much radiation/.test(t))
     return T("vital-radiation", ["About 71 millisieverts so far this mission. The dose readings are simulated in this demo."], show ? [{ type: "tab", tab: "radiation" }] : []);
   if (/blood pressure|\bbp\b/.test(t))
     return T("vital-bp", ["Your last cuff reading was 118 over 76, taken at 7:40. That one is a preset value in this demo."]);
@@ -349,7 +349,7 @@ function aloneStart(condId: string, c: BrainContext): Turn {
     return T("crewmate-no", [`Okay. I'll stay with you the whole time. ${cond ? cond.steps[0] : "Stay still."} Tell me straight away if anything changes.`], acts);
   }
   return T("crewmate-no", [
-    "Okay. I'm staying with you the whole time. I'll ask simple yes or no questions, so you don't have to talk much.",
+    "Okay. I'm staying with you the whole time. I'll keep my questions short, so you don't have to talk much. Answer however you like.",
     checks[0].q,
   ], [...acts, { type: "log", text: "No crewmate present. Cosmo switched to yes-or-no questions.", severity: "major" }],
   { kind: "yesno", cond: condId, i: 0, tries: 0 }, { expect: "yesno" });
@@ -567,7 +567,7 @@ function knowledge(t: string): Turn | null {
   if (!hit) return null;
   if (hit[1] === "radiation") {
     const h = hazards.find((x) => x.id === "radiation")!;
-    return T("knowledge", [`${h.summary} ${h.facts[0] ?? ""}`.trim(), "Want me to open your radiation screen?"], [], { kind: "offer", offer: { kind: "activity", activity: "earth" } }, { expect: "yesno", agent: false });
+    return T("knowledge", [`${h.summary} ${h.facts[0] ?? ""}`.trim(), "I've opened your radiation screen so you can see your own dose."], [{ type: "tab", tab: "radiation" }]);
   }
   const r = risks.find((x) => x.id === hit[1]);
   if (!r) return null;
@@ -628,7 +628,7 @@ function handlePending(t: string, raw: string, c: BrainContext): Turn | null {
       }
       const turn = answerYesNo(p, a, c);
       // they explained instead of just yes/no: acknowledge it
-      if (wordCount(raw) > 4 && turn.say.length) turn.say = [`Thanks for telling me. ${turn.say[0]}`, ...turn.say.slice(1)];
+      if (wordCount(raw) > 4 && turn.say.length) turn.say = [`Thanks for telling me. ${turn.say[0].replace(/^(Okay|Good)\.\s*/, "")}`.trim(), ...turn.say.slice(1)];
       return turn;
     }
     case "emergency": {
@@ -949,9 +949,9 @@ export function respond(text: string, c: BrainContext): Turn {
     return T("forget", ["Done. I've forgotten everything you told me. Fresh start."], [], null, { learn: [{ kind: "forget" }] });
   }
   if (/what do you (know|remember) about me|what have you learned|do you remember (me|anything)|what do you remember/.test(t)) {
-    const facts = describeMemory(c.memory).map((f) => f.replace(/^Their /, "Your ").replace(/\bthey\b/g, "you").replace(/\bThey\b/g, "You").replace(/\btheir\b/g, "your"));
+    const facts = recall(c.memory);
     return T("memory", facts.length
-      ? ["Here's what I've picked up so far.", facts.slice(0, 4).join(" "), "Say forget everything any time and I'll wipe it."]
+      ? ["Here's what I've picked up so far.", facts.slice(0, 5).join(" "), "Say forget everything any time and I'll wipe it."]
       : ["Not much yet. Tell me about yourself: your name, the people you miss, what helps on a hard day. I'll remember it."]);
   }
 

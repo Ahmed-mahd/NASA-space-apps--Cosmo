@@ -163,6 +163,8 @@ export const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  * index to a pause in ms after that word. With `voice`, the line is also spoken aloud.
  */
 async function simulateSpeech(text: string, opts: { pauses?: Record<number, number>; voice?: boolean; wpm?: number } = {}) {
+  // no microphone in this browser: behave as if the conversation is open
+  if (!wakeOn && state.wake !== "awake") set({ wake: "awake" });
   if (opts.voice && "speechSynthesis" in window) {
     const u = new SpeechSynthesisUtterance(text);
     const v = pick("astronaut");

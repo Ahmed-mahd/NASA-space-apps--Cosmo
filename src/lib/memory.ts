@@ -65,8 +65,11 @@ export function learnFromWords(raw: string): Learn[] {
     const [rel, nm] = /^[A-Z]/.test(person[1]) ? [person[2], person[1]] : [person[1], person[2]];
     if (!NOT_NAMES.test(nm)) out.push({ kind: "person", relation: rel.toLowerCase(), name: nm });
   }
+  const event = /\b(birthday|anniversary|wedding|graduation|exam|surgery)\b/i.exec(t)?.[1]?.toLowerCase();
+  const who = out.find((l): l is Extract<Learn, { kind: "person" }> => l.kind === "person");
   const fam = new RegExp(`\\bmy (${RELATIONS})'?s? (birthday|anniversary|wedding|graduation|exam|surgery)\\b`, "i").exec(t);
-  if (fam) out.push({ kind: "fact", text: `Has a ${fam[1].toLowerCase()}; their ${fam[2].toLowerCase()} came up on ${today()}` });
+  if (event && who) out.push({ kind: "fact", text: `${who.name} (${who.relation})'s ${event} was around ${today()}` });
+  else if (fam) out.push({ kind: "fact", text: `Their ${fam[1].toLowerCase()}'s ${fam[2].toLowerCase()} was around ${today()}` });
   const like = /\bi (?:really |do )?(?:like|love|enjoy)\s+([a-z][^.,!?]{2,40})/i.exec(t);
   if (like && !/\byou\b|\bit\b|\bthat\b/i.test(like[1])) out.push({ kind: "fact", text: `Enjoys ${like[1].trim()}` });
   const dislike = /\bi (?:really )?(?:hate|don'?t like|can'?t stand)\s+([a-z][^.,!?]{2,40})/i.exec(t);
@@ -98,7 +101,7 @@ export function applyLearn(m: AstroMemory, list: Learn[]): AstroMemory {
 /** The plan that has worked best for this astronaut so far, if any. */
 export function bestHelper(m: AstroMemory | undefined): PlanId | null {
   if (!m) return null;
-  const scored = Object.entries(m.helps).map(([p, n]) => [p, (n ?? 0) - (m.declined[p as PlanId] ?? 0)] as const).filter(([, s]) => s > 0);
+  const scored = Object.entries(m.helps).map(([p, n]) => [p, 2 * (n ?? 0) - (m.declined[p as PlanId] ?? 0)] as const).filter(([, s]) => s > 0);
   scored.sort((a, b) => b[1] - a[1]);
   return (scored[0]?.[0] as PlanId) ?? null;
 }
@@ -123,6 +126,21 @@ export function describe(m: AstroMemory | undefined): string[] {
   if (topTopic && (topTopic[1] ?? 0) >= 1 && topTopic[0] !== "unknown" && topTopic[0] !== "other") out.push(`What has weighed on them before: ${topTopic[0]}.`);
   if (m.jokes.laughs + m.jokes.groans >= 2) out.push(m.jokes.laughs >= m.jokes.groans ? "They enjoy Cosmo's jokes." : "They are not big on Cosmo's puns.");
   if (m.episodes[0]) out.push(`Last health episode: ${m.episodes[0].text}`);
+  return out;
+}
+
+/** The same memory, said to the astronaut ("Your daughter is Lina."). */
+export function recall(m: AstroMemory | undefined): string[] {
+  if (!m) return [];
+  const out: string[] = [];
+  if (m.name) out.push(`Your name is ${m.name}.`);
+  for (const [rel, nm] of Object.entries(m.people)) out.push(`Your ${rel} is ${nm}.`);
+  out.push(...m.facts.slice(0, 3).map((f) => `${f.replace(/^Their /, "Your ").replace(/^Enjoys /, "You enjoy ").replace(/^Dislikes /, "You don't like ")}.`.replace(/\.\.$/, ".")));
+  const best = bestHelper(m);
+  if (best) out.push(`When you feel low, ${planWords(best)} helps you.`);
+  const topics = Object.entries(m.topics).filter(([t, n]) => (n ?? 0) > 0 && t !== "unknown" && t !== "other").map(([t]) => t);
+  if (topics.length) out.push(`Lately, ${topics.slice(0, 2).join(" and ")} ${topics.length > 1 ? "have" : "has"} been on your mind.`);
+  if (m.jokes.laughs + m.jokes.groans >= 2) out.push(m.jokes.laughs >= m.jokes.groans ? "And you laugh at my jokes, which I appreciate." : "And you're not a fan of my puns. Noted.");
   return out;
 }
 

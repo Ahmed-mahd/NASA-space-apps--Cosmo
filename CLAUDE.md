@@ -44,7 +44,13 @@ Next (Phase 1 close → Phase 2): `src/lib/stream.ts`, `src/lib/baseline.ts`, vi
 - Proactive check-ins: `lib/watch.ts` (deviation from personal normal + 90-s oxygen trend forecast); cooldowns in `DeviceOS.tsx`. New scenario phase "stress". Four demo conversations.
 - Tests: `npm test` (node:test + jiti, 148 cases in `src/lib/brain.test.ts`). vitest could not be downloaded here.
 - Voice debugging: Chrome lets only ONE tab run speech recognition; two Cosmo tabs cancel each other ("aborted" loop), so the focused tab claims the mic and others step back. In dev the console logs every recognizer event as `[cosmo-voice]` (in production set localStorage `cosmo.debug` = "1"); `window.__cosmoVoice.hear(text)` feeds words as if heard. Speaker playback can't be used to test the mic (the laptop's echo cancellation removes it); test with a real voice.
-- Checkpoint C now also covers R-MIND-01, R-MIND-02, R-CHEST-01 and the yes/no question lists.
+- Checkpoint C now also covers R-MIND-01, R-MIND-02, R-CHEST-01, R-GLU-01 (finger-stick glucose) and the yes/no question lists.
+
+## State (Sat, agent update)
+- Turn-taking (`voice.ts`): a turn ends after a real pause (longer after "and", "I was", a bare "no"); recognition keeps running while Cosmo speaks, Cosmo's own voice is filtered out, and the astronaut can talk over Cosmo (it stops and listens). Patience grows when Cosmo is interrupted right after answering.
+- Agent (`app/api/cosmo/route.ts`): "chat" mode answers anything unscripted with history + memory + readings + approved steps; whitelisted non-medical actions only; drug/dose replies discarded. Reads `GROQ_API_KEY` (or the COSMO_MODEL_* vars) and picks a model automatically. Needs the code pushed to work on Vercel; locally add the key to `.env.local`.
+- Memory (`lib/memory.ts`, browser storage): name, family, likes, what helped, recurring topics, joke taste, episodes; shown in the Log drawer; "what do you remember about me" / "forget everything".
+- Dev test hook: `window.__cosmoVoice.say(text, {pauses: {wordIndex: ms}})` streams words like Chrome; used to simulate the astronaut before real-voice tests.
 
 ## Answers from Ahmed (Fri 20:35)
 - **Scenario 1 is the mild-hypoxia story.** The astronaut reports fatigue and headache; SpO2 drifts below their personal baseline; Cosmo asks follow-ups, runs an approved check, reassesses. Source: NASA hypoxia risk page (symptoms: confusion, headache, vision problems, trouble sleeping).
