@@ -804,7 +804,11 @@ export function respond(text: string, c: BrainContext): Turn {
     return T("music", ["I'd sing, but mission control asked me not to. Want the Earth window with some ambient sound instead?"], [], { kind: "offer", offer: { kind: "activity", activity: "earth" } }, { expect: "yesno" });
 
   /* ---- jokes and facts (humor follows severity) ---- */
-  if (/joke|make me laugh|something funny|cheer me up|\bfunny\b|another one|one more/.test(t)) {
+  const JOKE_REACTION = /not funny|bad joke|that'?s (bad|terrible|awful|lame|corny)|so bad|terrible|cringe|groan|\bboo\b/;
+  if (c.lastIntent && /^(joke|laugh|groan)$/.test(c.lastIntent) && JOKE_REACTION.test(t)) {
+    return T("groan", [GROAN_REPLIES[(c.jokeIndex + 1) % GROAN_REPLIES.length]], [], null, { sleep: true });
+  }
+  if (/joke|make me laugh|something funny|say something funny|cheer me up|another one|one more/.test(t) && !/not funny/.test(t)) {
     if (alert) return T("joke-declined", ["Let's sort this out first. Jokes after, I promise."]);
     return tellJoke(c);
   }
@@ -820,7 +824,7 @@ export function respond(text: string, c: BrainContext): Turn {
     return T("are-you-real", ["I'm an AI. A real one, but not a person. I can't replace your crew or your family, but I can listen anytime and help you reach them."]);
   if (/do you (sleep|dream|get tired|eat|rest)/.test(t))
     return T("do-you-sleep", ["I don't sleep. Someone has to watch your heart rate at three in the morning. I do dream about a bigger battery, though."]);
-  if (/\bi love you\b|you'?re (the best|amazing|awesome|great|cool|brilliant)|good job|well done|nice work|good boy|good bot/.test(t))
+  if (/\bi love you\b|(you'?re|your|you are) (the )?(best|amazing|awesome|great|cool|brilliant)|good job|well done|nice work|good boy|good bot/.test(t))
     return T("compliment", ["That means a lot. I'm officially your biggest fan, by a few hundred million kilometres."]);
   if (/you'?re (stupid|useless|dumb|annoying|bad|terrible)|i hate you|you suck/.test(t))
     return T("insult", ["Fair. I'll try to do better. And if something's bothering you, I'm still here to listen."]);
@@ -847,6 +851,9 @@ export function respond(text: string, c: BrainContext): Turn {
   }
 
   /* ---- nothing matched ---- */
+  if (c.pending && (c.pending.kind === "offer" || c.pending.kind === "check-later" || c.pending.kind === "check-in") && c.lastIntent !== "reask") {
+    return T("reask", ["Sorry, I didn't catch that. Was that a yes or a no?"], [], c.pending, { expect: "yesno" });
+  }
   if (c.pending?.kind === "open") {
     return c.pending.tries < 1
       ? T("open-unclear", ["Take your time. Is something hurting, or is it more about how you're feeling inside?"], [], { kind: "open", tries: c.pending.tries + 1 }, { expect: "open" })

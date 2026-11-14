@@ -89,6 +89,9 @@ describe("wake word", () => {
     ["hi kosmo", true, ""],
     ["okay cozmo tell me a joke", true, "tell me a joke"],
     ["Cosmo, I feel lonely", true, "I feel lonely"],
+    ["so cosmo, how am i doing", true, "how am i doing"],
+    ["he cosmo tell me a joke", true, "tell me a joke"],
+    ["what's my heart rate cosmo", true, "what's my heart rate"],
     ["so hey cosmo how am i doing", true, "how am i doing"],
     ["tell me about the cosmos", false, "tell me about the cosmos"],
     ["I study cosmology", false, "I study cosmology"],
@@ -394,6 +397,25 @@ describe("proactive check-ins", () => {
     assert.deepEqual(s.run(["no", "it's more how I'm feeling", "work"]), ["check-in-not-ok", "open-feelings", "explore-cause"]);
     const p = session({ pending: { kind: "check-in", topic: "stress" } });
     assert.deepEqual(p.run(["not great", "it's physical", "my stomach, about a 4"]), ["check-in-not-ok", "open-where", "pain-score"]);
+  });
+});
+
+describe("what the real mic test turned up", () => {
+  it("an unclear answer to an offer is asked again, then understood", () => {
+    const s = session({ pending: { kind: "offer", offer: { kind: "joke" } } });
+    assert.deepEqual(s.run(["purple elephant", "yes"]), ["reask", "joke"]);
+  });
+  it("'not funny' after a joke is a groan, not a request for another joke", () => {
+    const s = session();
+    assert.deepEqual(s.run(["tell me a joke", "no that's not funny", "not funny"]), ["joke", "groan", "groan"]);
+  });
+  it("'your best' (Chrome's spelling of you're the best) is a compliment", () => {
+    assert.equal(session().say("your best")[0].intent, "compliment");
+  });
+  it("answers heard in real use", () => {
+    const s = session({ phase: "hypoxia-severe", pending: { kind: "crewmate", cond: "low-oxygen" } });
+    assert.deepEqual(s.run(["no no", "yes", "yeah I'm feeling a bit dizzy", "no not yet", "yes yes", "slightly", "much better"]),
+      ["crewmate-no", "yesno", "yesno", "yesno", "yesno", "yesno-recheck", "recheck", "recovered"]);
   });
 });
 

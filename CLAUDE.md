@@ -42,7 +42,8 @@ Next (Phase 1 close → Phase 2): `src/lib/stream.ts`, `src/lib/baseline.ts`, vi
 - "Hey Cosmo" wake word: `lib/voice.ts` runs Chrome speech recognition continuously, wakes on the phrase (`lib/wake.ts`, loose match for cosmos/kosmo/cozmo), keeps listening 7-14 s after each answer, pauses while anything is spoken. Orb (`VoiceOrb.tsx`) follows the live mic spectrum; text box (`VoicePanel.tsx`) is separate and has yes/no tap buttons as a fallback.
 - Brain rewrite (`lib/brain.ts`): ~60 intents; feelings are explored before suggesting (cause -> how long -> what helps -> plan, details never logged); crisis path; chest pain; generic emergency triage; yes/no-only questions when the astronaut is alone (`ALONE_CHECKS` in `conditions.ts`).
 - Proactive check-ins: `lib/watch.ts` (deviation from personal normal + 90-s oxygen trend forecast); cooldowns in `DeviceOS.tsx`. New scenario phase "stress". Four demo conversations.
-- Tests: `npm test` (node:test + jiti, 141 cases in `src/lib/brain.test.ts`). vitest could not be downloaded here.
+- Tests: `npm test` (node:test + jiti, 148 cases in `src/lib/brain.test.ts`). vitest could not be downloaded here.
+- Voice debugging: Chrome lets only ONE tab run speech recognition; two Cosmo tabs cancel each other ("aborted" loop), so the focused tab claims the mic and others step back. In dev the console logs every recognizer event as `[cosmo-voice]` (in production set localStorage `cosmo.debug` = "1"); `window.__cosmoVoice.hear(text)` feeds words as if heard. Speaker playback can't be used to test the mic (the laptop's echo cancellation removes it); test with a real voice.
 - Checkpoint C now also covers R-MIND-01, R-MIND-02, R-CHEST-01 and the yes/no question lists.
 
 ## Answers from Ahmed (Fri 20:35)

@@ -263,8 +263,6 @@ export default function MindDeck({ request, mood, status, stress, hrv, journal, 
   const [jokeIdx, setJokeIdx] = useState(0);
   const [laughs, setLaughs] = useState(0);
   const [round, setRound] = useState(0);
-  const v = useVoice();
-  const checking = v.listening || v.thinking;
 
   const cur = MOODS.find((m) => m.id === mood);
   return (
@@ -296,7 +294,7 @@ export default function MindDeck({ request, mood, status, stress, hrv, journal, 
               <div className="flex-1">
                 <p className="text-2xl font-semibold">How&rsquo;s your head today?</p>
                 <p className="text-sm text-ink/65">Talk to Cosmo the way you&rsquo;d talk to a friend. It asks what&rsquo;s behind a feeling and what usually helps you, before it suggests anything.</p>
-                <button type="button" onClick={onCheckIn} className="mt-3 rounded-full bg-violet px-5 py-2.5 text-sm font-medium text-white">{checking ? "Listening…" : "🎙 Voice check-in"}</button>
+                <button type="button" onClick={onCheckIn} className="mt-3 rounded-full bg-violet px-5 py-2.5 text-sm font-medium text-white">🎙 Voice check-in</button>
               </div>
             </div>
             <div>

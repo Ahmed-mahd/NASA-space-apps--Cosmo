@@ -49,8 +49,8 @@ const REQUESTS: Record<RequestKind, { text: string; severity: "info" | "major" }
   quiet: { text: "Non-urgent messages held for 20 minutes.", severity: "info" },
   rest: { text: "Timeline: 30 quiet minutes blocked.", severity: "info" },
 };
-/** Proactive check-ins: never twice for the same thing within 3 minutes, never more than one every 40 s. */
-const CHECK_COOLDOWN = 180_000, CHECK_GAP = 40_000, QUIET_AFTER_TALK = 15_000, SETTLE = 25_000;
+/** Proactive check-ins: never twice for the same thing within 3 minutes, never more than one every 30 s. */
+const CHECK_COOLDOWN = 180_000, CHECK_GAP = 30_000, QUIET_AFTER_TALK = 8_000, SETTLE = 6_000;
 
 export default function DeviceOS({ onExit }: { onExit?: () => void }) {
   const { state, speed, setSpeed, paused, setPaused, phase, setPhase } = useVitals();

@@ -91,6 +91,9 @@ export default function VoicePanel({ engine, busy, demo, expect, transcript, ale
         </div>
       )}
       {v.error && <p className="text-[11px] text-alert">{v.error}</p>}
+      {v.overheard && v.wake === "sleeping" && !demo && (
+        <p className="truncate text-[11px] text-ink/45" title="Development only: what Chrome heard while Cosmo was asleep">Mic heard (no wake phrase): &ldquo;{v.overheard}&rdquo;</p>
+      )}
 
       {log && (
         <div className="dev-panel dev-scroll absolute bottom-[calc(100%+8px)] right-0 z-40 max-h-80 w-[min(480px,92vw)] overflow-y-auto p-4 brief-in">
