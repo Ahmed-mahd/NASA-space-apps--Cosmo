@@ -11,7 +11,7 @@ import { PHASES } from "@/lib/stream";
 import { useConversation, type LiveContext } from "@/lib/useConversation";
 import { useVitals } from "@/lib/useVitals";
 import type { VitalKey } from "@/lib/vitals";
-import { describe as describeMemory } from "@/lib/memory";
+import { recall } from "@/lib/memory";
 import { getVoiceState } from "@/lib/voice";
 import { observe } from "@/lib/watch";
 import { LabsView, LinkView, RadiationView, TrendsView, type LogEntry } from "./DeviceViews";
@@ -255,7 +255,7 @@ export default function DeviceOS({ onExit }: { onExit?: () => void }) {
         <div className="lg:-mt-10"><VoiceOrb size={112} alert={status === "alert"} onTap={convo.talk} /></div>
         <VoicePanel engine={convo.engine} aiNote={convo.aiNote} onRecheck={() => void convo.refreshEngine()} busy={convo.busy} demo={convo.demo} expect={convo.expect} transcript={convo.transcript} alert={status === "alert"}
           onDemo={(id) => convo.playDemo(id)} onCancelDemo={convo.cancelDemo} onAnswer={(t) => void convo.heard(t)}
-          remembers={describeMemory(convo.memory)} onForget={convo.forget} />
+          remembers={recall(convo.memory)} onForget={convo.forget} />
       </footer>
 
       {presenter && (
