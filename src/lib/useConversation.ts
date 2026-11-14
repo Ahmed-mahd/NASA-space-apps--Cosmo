@@ -201,7 +201,7 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              mode: route === "agent" ? "chat" : "reword", utterance, draft: turn.say, intent: turn.intent, status: c.status, clock: c.clock,
+              mode: route === "agent" ? "chat" : "reword", prefer: engineRef.current, utterance, draft: turn.say, intent: turn.intent, status: c.status, clock: c.clock,
               vitals: `heart rate ${r1(d.heartRate.recent)} bpm (their normal ${r1(d.heartRate.mean)}), blood oxygen ${r1(d.spo2.recent)}% (normal ${r1(d.spo2.mean)}), breathing ${r1(d.respRate.recent)}/min (normal ${r1(d.respRate.mean)}), HRV ${r1(d.hrv.recent)} ms, stress index ${r1(d.stress.recent)}/100 (normal ${r1(d.stress.mean)}), skin temperature ${(d.skinTemp.recent ?? 0).toFixed(1)} C, steps today ${c.stepsToday}, last night's sleep 5 h 4 min, last finger-stick glucose 92 mg/dL (demo preset), radiation this mission 71 mSv (simulated)`,
               history: history.current.slice(-16).map((h) => ({ who: h.who, text: h.text })),
               memory: describeMemory(astro.current),
@@ -214,6 +214,8 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
           if (res.error && /key|no API|rejected/i.test(String(res.error))) { engineRef.current = "on-board scripted"; setEngine("on-board scripted"); engineAt.current = Date.now(); }
           const lines: string[] = Array.isArray(res.lines) ? res.lines : [];
           const fromModel = res.engine && res.engine !== "on-board scripted" && !res.error && lines.length > 0;
+          // remember which model answered, so the next question goes straight to it
+          if (fromModel && res.engine !== engineRef.current) { engineRef.current = res.engine; setEngine(res.engine); }
           if (fromModel && route === "reword") turn = { ...turn, say: lines };
           if (fromModel && route === "agent") {
             const reply: AgentReply = {
