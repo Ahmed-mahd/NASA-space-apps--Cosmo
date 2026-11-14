@@ -604,3 +604,23 @@ describe("keyword health matches are confirmed by the agent", () => {
     assert.ok(!merged.actions.some((a) => a.type === "fastForward" || a.type === "phase"));
   });
 });
+
+/* ================= Cosmo's own voice mixed into what the mic hears ================= */
+import { stripEcho } from "./voice";
+
+describe("Cosmo's own voice is removed from what it hears", () => {
+  const said = ["Your heart rate is 70. Your normal is about 70. That's normal for you."];
+  const cases: [string, string][] = [
+    ["your heart rate is 70 how am I doing", "how am I doing"],
+    ["Your heart rate is 70 your normal is about 70 what's my oxygen", "what's my oxygen"],
+    ["how am I doing", "how am I doing"],
+    ["your oxygen please", "your oxygen please"], // one shared word may be the astronaut's
+    ["how am I doing that's normal for you", "how am I doing"],
+    ["your heart rate is 70", ""],
+  ];
+  for (const [heard, keep] of cases) it(`"${heard}" -> "${keep}"`, () => assert.equal(stripEcho(heard, said).text, keep));
+  it("a cut found earlier in Chrome's piece stays cut as the piece grows", () => {
+    const first = stripEcho("your heart rate is 70 how", said);
+    assert.equal(stripEcho("your heart rate is 70 how is my sleep", said, first.lead).text, "how is my sleep");
+  });
+});

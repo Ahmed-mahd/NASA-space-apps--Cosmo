@@ -406,10 +406,31 @@ function isEcho(heard: string) {
   return hw.filter((w) => pool.has(w)).length / hw.length >= 0.6;
 }
 
+/**
+ * Chrome often merges Cosmo's voice (coming back through the mic) and the astronaut's words into one
+ * sentence: "your heart rate is 70 how am I doing". Cut Cosmo's words off the start and the end, so only
+ * the astronaut's words remain. Once a leading echo is found it stays cut for the rest of Chrome's piece.
+ */
+let segEchoLead = 0;
+const tok = (t: string) => t.toLowerCase().match(/[a-z0-9']+/)?.[0] ?? "";
+export function stripEcho(piece: string, lines: string[], known = 0): { text: string; lead: number } {
+  const toks = piece.trim().split(/\s+/).filter(Boolean);
+  const pool = new Set(words(lines.join(" ")));
+  let i = 0;
+  while (i < toks.length && pool.has(tok(toks[i]))) i++;
+  // one shared word ("your", "how") could be the astronaut's own; two or more in a row is Cosmo
+  const lead = Math.min(toks.length, Math.max(known, i >= 2 ? i : 0));
+  let j = toks.length;
+  while (j > lead && pool.has(tok(toks[j - 1]))) j--;
+  const end = toks.length - j >= 3 ? j : toks.length;
+  return { text: toks.slice(lead, end).join(" "), lead };
+}
+
 /** The astronaut talks over Cosmo: stop talking and listen. */
 function bargeIn() {
   log("astronaut talked over Cosmo: stopping to listen");
   interruptSeq++;
+  turnDone = ""; // anything collected before this belongs to Cosmo's own voice
   const since = performance.now() - lastDispatchAt;
   stopSpeaking();
   onBargeIn?.({ msSinceAnswerStarted: since });
@@ -435,13 +456,20 @@ function endTurn() {
 /** One update from the recognizer (or the simulator): part of the current piece, or the finished piece. */
 function onSegment(text: string, final: boolean) {
   if (muted) return;
-  const piece = text.trim();
-  // Cosmo is (or was just) talking: its own voice is ignored, the astronaut's voice interrupts it
-  const echoWindow = speakingCount > 0 || performance.now() - lastSpokeEnd < 1200;
-  if (echoWindow && piece && isEcho(piece)) { log("ignored Cosmo's own voice:", JSON.stringify(piece)); return; }
+  let piece = text.trim();
+  // Cosmo is (or was just) talking: remove its own voice, the astronaut's words interrupt it
+  const echoWindow = speakingCount > 0 || performance.now() - lastSpokeEnd < 4000;
+  if (piece && (echoWindow || segEchoLead > 0)) {
+    const cut = stripEcho(piece, spoken.slice(-3), segEchoLead);
+    if (cut.text !== piece) log("removed Cosmo's own words:", JSON.stringify(piece), "->", JSON.stringify(cut.text));
+    segEchoLead = cut.lead;
+    piece = cut.text;
+    if (!piece || (echoWindow && isEcho(piece))) { if (final) segEchoLead = 0; return; }
+  }
+  if (final) segEchoLead = 0;
   if (speakingCount > 0) {
     if (state.speaking !== "cosmo") return; // demo voices
-    if (!piece || (words(piece).length < 2 && !/^(stop|wait|cosmo|hold on|hang on|sorry|no|excuse me)\b/.test(piece.toLowerCase()))) return;
+    if (words(piece).length < 2 && !/^(stop|wait|cosmo|hold on|hang on|sorry|no|excuse me|what|how|why)\b/.test(piece.toLowerCase())) return;
     bargeIn();
   }
   const full = `${turnDone} ${piece}`.trim();
@@ -478,6 +506,7 @@ function startRecognition() {
   const r = new Ctor();
   rec = r;
   segStart = 0;
+  segEchoLead = 0;
   r.lang = "en-US";
   r.interimResults = true;
   r.continuous = true;
