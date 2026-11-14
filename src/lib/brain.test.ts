@@ -526,11 +526,11 @@ describe("questions about space health", () => {
 import { mergeAgent, routeOf } from "./agent";
 
 describe("who answers: on-board, reworded, or the AI agent", () => {
-  const exact = ["I want to kill myself", "my chest hurts", "I can't breathe", "help me", "I have a headache", "tell me a joke", "stop", "forget everything"];
+  const exact = ["I want to kill myself", "my chest hurts", "I can't breathe", "help me", "tell me a joke", "stop", "forget everything"];
   for (const line of exact) {
     it(`"${line}" stays on board, word for word`, () => assert.equal(routeOf(session().say(line)[0].intent, "nominal"), "exact"));
   }
-  const reword = ["what's my heart rate", "how am I doing", "what time is it", "I couldn't sleep last night", "remember that I take my coffee black"];
+  const reword = ["what's my heart rate", "how am I doing", "what time is it", "remember that I take my coffee black"];
   for (const line of reword) {
     it(`"${line}" is on-board content, reworded only`, () => assert.equal(routeOf(session().say(line)[0].intent, "nominal"), "reword"));
   }
@@ -586,5 +586,21 @@ describe("open conversation never hits a dead end", () => {
     const t = session().say("I was thinking about my garden back home")[0];
     assert.match(t.say.join(" "), /you were thinking about your garden back home/i);
     assert.match(t.say.join(" "), /\?|Tell me more/);
+  });
+});
+
+describe("keyword health matches are confirmed by the agent", () => {
+  for (const line of ["I have a headache", "I'm so tired of waiting for the resupply", "I'm sick of this food", "I couldn't sleep last night"]) {
+    it(`"${line}" goes to the agent with the scripted reply as a suggestion`, () => assert.equal(routeOf(session().say(line)[0].intent, "nominal"), "agent"));
+  }
+  it("a real symptom: the agent follows and the scripted check still runs", () => {
+    const turn = session().say("I have a headache")[0];
+    const merged = mergeAgent(turn, { lines: ["Sorry about the headache. Let me check your readings."], follow: true, actions: [], remember: [] });
+    assert.ok(merged.actions.some((a) => a.type === "fastForward"));
+  });
+  it("not a symptom: the agent declines and no health check is started", () => {
+    const turn = session().say("I'm so tired of waiting for the resupply")[0];
+    const merged = mergeAgent(turn, { lines: ["Waiting is the worst. What are you hoping is in it?"], follow: false, actions: [], remember: [] });
+    assert.ok(!merged.actions.some((a) => a.type === "fastForward" || a.type === "phase"));
   });
 });

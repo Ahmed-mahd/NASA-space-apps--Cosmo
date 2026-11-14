@@ -17,8 +17,13 @@ import type { CrewStatus } from "./conditions";
 
 export type Route = "exact" | "reword" | "agent";
 
-const EXACT = /^(crisis|yesno|crewmate|emergency|chest-pain|cant-breathe|faint|injury|major-alert|scan|glucose|crew-o2|stop|repeat|silence|wake|joke$|pain-score|pain-unclear|rest$|recheck|report|recovered|not-better|symptoms|forget|learn-name|check-in)/;
-const REWORD = /^(vital|vitals|sleep$|cold|nausea|pain$|thirst|hungry|time|day|plan-done|memory|remember)/;
+const EXACT = /^(crisis|yesno|crewmate|emergency|chest-pain|cant-breathe|faint|injury|major-alert|scan|glucose|crew-o2|stop|repeat|silence|wake|joke$|pain-score|pain-unclear|rest$|recheck|report|recovered|not-better|forget|learn-name)/;
+const REWORD = /^(vital|vitals|time|day|plan-done|memory|remember)/;
+/**
+ * Keyword matches that can misfire ("I'm tired of waiting", "sick of this food") go to the agent with the
+ * scripted health reply as SUGGESTION. If the astronaut really reports a symptom the model follows it and
+ * the scripted check runs unchanged; if not, the model answers what they meant and the script is dropped.
+ */
 /** During an alert the model only steps in when the brain has no answer at all. */
 const ALERT_AGENT = /^(unknown|lost|reask|open-unclear)$/;
 

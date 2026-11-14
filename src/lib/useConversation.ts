@@ -196,6 +196,12 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
       if (route !== "exact" && c && (turn.say.length || route === "agent")) {
         const d = c.devs;
         const r1 = (v: number | null | undefined) => Math.round(v ?? 0);
+        // no dead air: if the model is slow, Cosmo says a short "thinking" word, like a person would
+        let filler: Promise<void> | null = null;
+        const fillerTimer = route === "agent" ? window.setTimeout(() => {
+          const words = ["Hmm, let me think.", "Good question.", "Mm, one sec.", "Let me think about that."];
+          filler = speak(words[(history.current.length + utterance.length) % words.length], "cosmo");
+        }, 1600) : undefined;
         try {
           const res = await fetch("/api/cosmo", {
             method: "POST",
@@ -208,6 +214,8 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
               conditions: c.conditions.map((x) => ({ title: x.title, severity: x.severity, steps: x.steps })),
             }),
           }).then((r) => r.json());
+          window.clearTimeout(fillerTimer);
+          if (filler) await filler;
           if (res.error) console.warn("[cosmo-agent]", res.error);
           // a refusal for safety (a medicine was named) is not an outage
           setAiNote(res.error && !/discarded/.test(res.error) ? String(res.error) : null);
@@ -227,6 +235,8 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
             if (reply.remember.length) learn(reply.remember.map((text) => ({ kind: "fact", text } as Learn)));
           }
         } catch (err) { console.warn("[cosmo-agent] unreachable, using the on-board reply", err); setAiNote("server unreachable"); }
+        window.clearTimeout(fillerTimer);
+        if (filler) await filler;
       }
       m.pending = turn.pending;
       m.lastIntent = turn.intent;
