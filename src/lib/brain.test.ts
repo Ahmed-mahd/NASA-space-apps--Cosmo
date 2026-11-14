@@ -521,3 +521,52 @@ describe("questions about space health", () => {
     assert.equal(t.agent, true);
   });
 });
+
+/* ================= round 4: AI-first routing ================= */
+import { mergeAgent, routeOf } from "./agent";
+
+describe("who answers: on-board, reworded, or the AI agent", () => {
+  const exact = ["I want to kill myself", "my chest hurts", "I can't breathe", "help me", "I have a headache", "tell me a joke", "stop", "forget everything"];
+  for (const line of exact) {
+    it(`"${line}" stays on board, word for word`, () => assert.equal(routeOf(session().say(line)[0].intent, "nominal"), "exact"));
+  }
+  const reword = ["what's my heart rate", "how am I doing", "what time is it", "I couldn't sleep last night", "remember that I take my coffee black"];
+  for (const line of reword) {
+    it(`"${line}" is on-board content, reworded only`, () => assert.equal(routeOf(session().say(line)[0].intent, "nominal"), "reword"));
+  }
+  const agent = ["what's your favourite planet and why", "how are you", "I'm feeling lonely", "why is the sky black in space", "tell me about your day",
+    "what should I name my plant", "who made you", "can you explain black holes", "I had a fight with my commander", "yes", "open the mind tab", "good night"];
+  for (const line of agent) {
+    it(`"${line}" goes to the AI agent`, () => assert.equal(routeOf(session().say(line)[0].intent, "nominal"), "agent"));
+  }
+  it("yes/no emergency answers never reach the model", () => {
+    const s = session({ phase: "hypoxia-severe", pending: { kind: "crewmate", cond: "low-oxygen" } });
+    for (const t of ["no I'm alone", "yes", "a little"].flatMap((l) => s.say(l))) assert.equal(routeOf(t.intent, "alert"), "exact");
+  });
+  it("during an alert the agent only helps when the brain has no answer", () => {
+    assert.equal(routeOf("greeting", "alert"), "exact");
+    assert.equal(routeOf("unknown", "alert"), "agent");
+  });
+  it("agent builds on the brain: the brain's question and actions stand", () => {
+    const turn = session().say("I'm feeling lonely")[0];
+    const merged = mergeAgent(turn, { lines: ["That sounds heavy, Ahmed. What's behind it?"], follow: true, actions: [], remember: [] });
+    assert.equal(merged.pending?.kind, "explore");
+    assert.deepEqual(merged.say, ["That sounds heavy, Ahmed. What's behind it?"]);
+    assert.ok(merged.actions.some((a) => a.type === "report"));
+  });
+  it("agent goes its own way: the script is dropped", () => {
+    const turn = session().say("what's your favourite planet and why")[0];
+    const merged = mergeAgent(turn, { lines: ["Saturn. The rings never get old."], follow: false, actions: [{ type: "tab", tab: "mind" }], remember: [] });
+    assert.equal(merged.intent, "agent");
+    assert.equal(merged.pending, null);
+    assert.deepEqual(merged.actions, [{ type: "tab", tab: "mind" }]);
+  });
+  it("no model: the on-board reply stands", () => {
+    const turn = session().say("hello")[0];
+    assert.equal(mergeAgent(turn, null), turn);
+  });
+  it("'remember that ...' is stored", () => {
+    const t = session().say("remember that I take my coffee black")[0];
+    assert.ok(t.learn?.some((l) => l.kind === "fact" && /coffee black/.test(l.text)));
+  });
+});

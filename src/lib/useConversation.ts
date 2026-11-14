@@ -6,6 +6,7 @@ import type { Condition, CrewStatus } from "./conditions";
 import type { Deviation } from "./baseline";
 import type { StreamPhase } from "./stream";
 import type { VitalKey } from "./vitals";
+import { mergeAgent, routeOf, type AgentReply } from "./agent";
 import { applyLearn, describe as describeMemory, emptyMemory, learnFromWords, loadMemory, saveMemory, type AstroMemory, type Learn } from "./memory";
 import {
   enableWake, followUp, getInterruptSeq, getVoiceState, goToSleep, initVoice, setBargeInHandler, setCommandHandler, setExpecting, setMuted,
@@ -110,6 +111,7 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [busy, setBusy] = useState(false);
   const [engine, setEngine] = useState("on-board scripted");
+  const engineRef = useRef("on-board scripted");
   const [demo, setDemo] = useState<string | null>(null);
   const [expect, setExpect] = useState<Turn["expect"]>(undefined);
   const [memory, setMemory] = useState<AstroMemory>(emptyMemory);
@@ -136,7 +138,7 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
     setPatience(astro.current.patience);
     // talked over Cosmo right after it started answering: next time, wait a little longer
     setBargeInHandler(({ msSinceAnswerStarted }) => { if (msSinceAnswerStarted < 5000) learn([{ kind: "patience", ms: 250 }]); });
-    fetch("/api/cosmo").then((r) => r.json()).then((d) => d.engine && setEngine(d.engine)).catch(() => {});
+    fetch("/api/cosmo").then((r) => r.json()).then((d) => { if (d.engine) { engineRef.current = d.engine; setEngine(d.engine); } }).catch(() => {});
     return () => setBargeInHandler(null);
   }, [learn]);
 
@@ -172,8 +174,42 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
   /** Run a decided turn: actions, optional rewording by the model, speech, then any follow-up. Returns the last turn played. */
   const playRef = useRef<(turn: Turn, utterance: string) => Promise<Turn>>(async (t) => t);
   useEffect(() => {
-    playRef.current = async (turn, utterance) => {
+    playRef.current = async (decided, utterance) => {
       const m = mem.current;
+      let turn = decided;
+      const c = getCtx();
+      // Who answers: the on-board brain word for word, the brain reworded, or the AI agent
+      const route = c && utterance && engineRef.current !== "on-board scripted" ? routeOf(turn.intent, c.status) : "exact";
+      if (route !== "exact" && c && (turn.say.length || route === "agent")) {
+        const d = c.devs;
+        const r1 = (v: number | null | undefined) => Math.round(v ?? 0);
+        try {
+          const res = await fetch("/api/cosmo", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              mode: route === "agent" ? "chat" : "reword", utterance, draft: turn.say, intent: turn.intent, status: c.status, clock: c.clock,
+              vitals: `heart rate ${r1(d.heartRate.recent)} bpm (their normal ${r1(d.heartRate.mean)}), blood oxygen ${r1(d.spo2.recent)}% (normal ${r1(d.spo2.mean)}), breathing ${r1(d.respRate.recent)}/min (normal ${r1(d.respRate.mean)}), HRV ${r1(d.hrv.recent)} ms, stress index ${r1(d.stress.recent)}/100 (normal ${r1(d.stress.mean)}), skin temperature ${(d.skinTemp.recent ?? 0).toFixed(1)} C, steps today ${c.stepsToday}, last night's sleep 5 h 4 min, last finger-stick glucose 92 mg/dL (demo preset), radiation this mission 71 mSv (simulated)`,
+              history: history.current.slice(-16).map((h) => ({ who: h.who, text: h.text })),
+              memory: describeMemory(astro.current),
+              conditions: c.conditions.map((x) => ({ title: x.title, severity: x.severity, steps: x.steps })),
+            }),
+          }).then((r) => r.json());
+          if (res.error) console.warn("[cosmo-agent]", res.error);
+          const lines: string[] = Array.isArray(res.lines) ? res.lines : [];
+          const fromModel = res.engine && res.engine !== "on-board scripted" && !res.error && lines.length > 0;
+          if (fromModel && route === "reword") turn = { ...turn, say: lines };
+          if (fromModel && route === "agent") {
+            const reply: AgentReply = {
+              lines, follow: res.follow !== false, asks: res.asks,
+              actions: (Array.isArray(res.actions) ? res.actions : []) as Action[],
+              remember: Array.isArray(res.remember) ? res.remember : [],
+            };
+            turn = mergeAgent(turn, reply);
+            if (reply.remember.length) learn(reply.remember.map((text) => ({ kind: "fact", text } as Learn)));
+          }
+        } catch (err) { console.warn("[cosmo-agent] unreachable, using the on-board reply", err); }
+      }
       m.pending = turn.pending;
       m.lastIntent = turn.intent;
       m.expect = turn.expect;
@@ -185,30 +221,7 @@ export function useConversation(getCtx: () => LiveContext | null, run: (a: Actio
         if (a.type === "fastForward") { ff = a; continue; }
         run(a);
       }
-      let lines = turn.say;
-      const c = getCtx();
-      if (lines.length && engine !== "on-board scripted" && c && utterance) {
-        try {
-          const d = c.devs;
-          const res = await fetch("/api/cosmo", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              mode: turn.agent ? "chat" : "reword", utterance, draft: lines, intent: turn.intent, status: c.status,
-              vitals: `heart rate ${Math.round(d.heartRate.recent ?? 0)} (normal about ${Math.round(d.heartRate.mean)}), SpO2 ${Math.round(d.spo2.recent ?? 0)}%, breathing ${Math.round(d.respRate.recent ?? 0)}/min, stress ${Math.round(d.stress.recent ?? 0)}/100`,
-              history: history.current.slice(-12).map((h) => ({ who: h.who, text: h.text })),
-              memory: describeMemory(astro.current),
-              conditions: c.conditions.map((x) => ({ title: x.title, severity: x.severity, steps: x.steps })),
-            }),
-          }).then((r) => r.json());
-          if (Array.isArray(res.lines) && res.lines.length) lines = res.lines;
-          // the agent may start a whitelisted, non-medical action and suggest things to remember
-          for (const a of Array.isArray(res.actions) ? res.actions : []) {
-            if (a.type === "tab" || a.type === "mind" || a.type === "request" || a.type === "mood") run(a as Action);
-          }
-          if (Array.isArray(res.remember)) learn(res.remember.map((text: string) => ({ kind: "fact", text } as Learn)));
-        } catch { /* keep the on-board draft */ }
-      }
+      const lines = turn.say;
       setThinking(false);
       let finished = lines.length ? await say(lines) : true;
       if (turn.joke && finished) {

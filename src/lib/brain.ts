@@ -955,6 +955,12 @@ export function respond(text: string, c: BrainContext): Turn {
       : ["Not much yet. Tell me about yourself: your name, the people you miss, what helps on a hard day. I'll remember it."]);
   }
 
+  const told = /^(?:please |can you |could you )?(?:remember|note|keep in mind|don'?t forget)(?: that| this)?[:,]? (.{4,160})$/i.exec(raw.trim());
+  if (told && !/\?$/.test(raw.trim())) {
+    const fact = told[1].replace(/[.!]+$/, "");
+    return T("remember", ["Got it. I'll remember that."], [], null, { learn: [{ kind: "fact", text: `Asked Cosmo to remember: "${fact}"` }] });
+  }
+
   /* ---- knowledge: questions about space health, from NASA's pages ---- */
   const k = knowledge(t);
   if (k) return k;

@@ -52,6 +52,12 @@ Next (Phase 1 close → Phase 2): `src/lib/stream.ts`, `src/lib/baseline.ts`, vi
 - Memory (`lib/memory.ts`, browser storage): name, family, likes, what helped, recurring topics, joke taste, episodes; shown in the Log drawer; "what do you remember about me" / "forget everything".
 - Dev test hook: `window.__cosmoVoice.say(text, {pauses: {wordIndex: ms}})` streams words like Chrome; used to simulate the astronaut before real-voice tests.
 
+## State (Sat, AI-first agent)
+- `lib/agent.ts` decides who answers each turn. The on-board brain always runs first, then: **exact** (emergencies, crisis, yes/no flows, procedures, symptoms, jokes: never sent to the model), **reword** (readings and health advice: model rephrases, numbers checked), **agent** (everything else: the model leads, the brain's reply is only a suggestion; `follow:false` drops the script). During an alert the agent only answers when the brain has nothing.
+- `app/api/cosmo/route.ts`: reads `GEMINI_API_KEY`, `GROQ_API_KEY` or `COSMO_MODEL_BASE_URL`+`COSMO_MODEL_API_KEY`; `COSMO_MODEL_NAME` is a model id (a key pasted there is ignored and never shown). One retry, drug/dose replies discarded, action whitelist, `?models=1` lists usable models. Errors show in the browser console as `[cosmo-agent]`.
+- Learning: the model returns `remember` facts (including preferences and corrections) that go into `lib/memory.ts`; "remember that ..." works offline.
+- Tested with a local stand-in model (no real key on this machine); the real model is tested by Ahmed on the live site.
+
 ## Answers from Ahmed (Fri 20:35)
 - **Scenario 1 is the mild-hypoxia story.** The astronaut reports fatigue and headache; SpO2 drifts below their personal baseline; Cosmo asks follow-ups, runs an approved check, reassesses. Source: NASA hypoxia risk page (symptoms: confusion, headache, vision problems, trouble sleeping).
 - **Nobody on the team is medically trained.** So: keep the rule file small and conservative, use only widely published reference ranges, show "example protocol, needs medical review" on every rule and in the "Why did Cosmo say that?" panel, never name a drug or dose, and say this limit plainly in the README. Suggest Ahmed ask a hackathon mentor to look over the rule file at Checkpoint C.
